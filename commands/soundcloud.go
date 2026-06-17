@@ -62,8 +62,8 @@ func init() {
 	RegisterCommand(Command{
 		Name:        "SoundCloud Downloader",
 		Category:    "Downloader",
-		Aliases:     []string{"play", "sc", "soundcloud"},
-		Pattern:     regexp.MustCompile(`(?i)^(?:sc|soundcloud|scdl|play)\s+(.+)$`),
+		Aliases:     []string{"sc", "soundcloud"},
+		Pattern:     regexp.MustCompile(`(?i)^(?:sc|soundcloud|scdl)\s+(.+)$`),
 		Description: "Mencari atau mendownload lagu dari SoundCloud",
 		//Price:       0.010,
 		Execute: ExecuteSoundcloud,

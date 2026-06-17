@@ -1,5 +1,10 @@
 {
   "botNumber": "6285141188639",
   "ownerNumber": "6281215205433",
-  "ownerName": "Azmi"
+  "ownerName": "Azmi",
+  "referralIntervalHours": 12,
+  "referralReward": 0.5,
+  "botMode": "public",
+  "prefixMode": false,
+  "prefixChar": "."
 }

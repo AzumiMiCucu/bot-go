@@ -93,13 +93,48 @@ type Hook struct {
 var (
 	CommandRegistry    []Command
 	registryMutex      sync.RWMutex
-	
+
+	// Index command untuk pencocokan cepat (dibangun ulang tiap RegisterCommand)
+	exactAliasMap   = make(map[string]*Command) // alias lower → command (exact match O(1))
+	patternCommands []*Command                  // hanya command yang punya Pattern (regex)
+	prefixEntries   []prefixEntry               // alias non-pattern (untuk prefix match, urut registrasi)
+
 	conversationMemory = make(map[string]*ConversationMemory)
 	memoryMutex        sync.RWMutex
-	
+
 	hooks              = make(map[HookType][]Hook)
 	hooksMutex         sync.RWMutex
 )
+
+type prefixEntry struct {
+	alias string
+	cmd   *Command
+}
+
+// rebuildIndex membangun ulang index pencocokan dari CommandRegistry.
+// Wajib dipanggil saat memegang registryMutex (write lock).
+func rebuildIndex() {
+	exactAliasMap = make(map[string]*Command, len(CommandRegistry)*2)
+	patternCommands = patternCommands[:0]
+	prefixEntries = prefixEntries[:0]
+
+	for i := range CommandRegistry {
+		cmd := &CommandRegistry[i]
+		if cmd.Pattern != nil {
+			patternCommands = append(patternCommands, cmd)
+		}
+		for _, alias := range cmd.Aliases {
+			al := strings.ToLower(alias)
+			// first-registered menang (jaga perilaku lama)
+			if _, ok := exactAliasMap[al]; !ok {
+				exactAliasMap[al] = cmd
+			}
+			if cmd.Pattern == nil {
+				prefixEntries = append(prefixEntries, prefixEntry{alias: al, cmd: cmd})
+			}
+		}
+	}
+}
 
 func init() {
 	// Auto cleanup memori chat tiap 15 menit
@@ -128,6 +163,7 @@ func RegisterCommand(cmd Command) *Command {
 
 	cmd.LastExecuted = make(map[string]time.Time)
 	CommandRegistry = append(CommandRegistry, cmd)
+	rebuildIndex()
 	return &CommandRegistry[len(CommandRegistry)-1]
 }
 
@@ -145,10 +181,9 @@ func MatchCommand(text string) (*Command, string) {
 		return nil, ""
 	}
 
-	// 1. Cek Regex Matching (Prioritas Tertinggi untuk pola khusus)
-	for i := range CommandRegistry {
-		cmd := &CommandRegistry[i]
-		if cmd.Pattern != nil && cmd.Pattern.MatchString(text) {
+	// 1. Cek Regex Matching (Prioritas Tertinggi) — hanya command ber-Pattern
+	for _, cmd := range patternCommands {
+		if cmd.Pattern.MatchString(text) {
 			matches := cmd.Pattern.FindStringSubmatch(text)
 			args := ""
 			if len(matches) > 1 {
@@ -160,37 +195,17 @@ func MatchCommand(text string) (*Command, string) {
 		}
 	}
 
-// 2. Exact Match & Prefix-less (Pencocokan Langsung, TANPA NLP)
+	// 2. Exact Match (O(1) via index)
 	textLower := strings.ToLower(text)
+	if cmd, ok := exactAliasMap[textLower]; ok {
+		return cmd, ""
+	}
 
-	for i := range CommandRegistry {
-		cmd := &CommandRegistry[i]
-		for _, alias := range cmd.Aliases {
-			aliasLower := strings.ToLower(alias)
-
-			// ATURAN 1: TEPAT SAMA persis (Exact Match)
-			// Ini selalu bekerja. Jadi ketik "list" saja akan selalu memanggil fitur.
-			if textLower == aliasLower {
-				return cmd, ""
-			}
-
-			// ==========================================
-			// 🚨 REGEX MUTLAK:
-			// Jika command ini punya Pattern (Regex), 
-			// JANGAN lanjut ke pencocokan Prefix (spasi tambahan).
-			// Biarkan Regex (di Step 1 atas) yang mengurus argumennya!
-			if cmd.Pattern != nil {
-				continue 
-			}
-			// ==========================================
-
-			// ATURAN 2: PREFIX MATCH (Alias + Spasi + Argumen)
-			// Hanya berlaku untuk command yang TIDAK pakai Regex!
-			if strings.HasPrefix(textLower, aliasLower+" ") {
-				// Sisa kalimat setelah alias dianggap sebagai argumen
-				args := strings.TrimSpace(text[len(aliasLower)+1:])
-				return cmd, args
-			}
+	// 3. Prefix Match (Alias + Spasi + Argumen) — hanya command non-Pattern
+	for _, pe := range prefixEntries {
+		if strings.HasPrefix(textLower, pe.alias+" ") {
+			args := strings.TrimSpace(text[len(pe.alias)+1:])
+			return pe.cmd, args
 		}
 	}
 

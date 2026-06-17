@@ -17,17 +17,8 @@ import (
 
 func init() {
 	RegisterCommand(Command{
-		Name:        "Cek Saldo",
-		Category:    "Ekonomi",
-		Aliases:     []string{"balance", "saldo", "bal"},
-		Pattern:     regexp.MustCompile(`(?i)^\s*(balance|saldo|bal)\s*$`),
-		Description: "Mengecek saldo balance kamu",
-		Execute:     ExecuteBalance,
-	})
-
-	RegisterCommand(Command{
 		Name:        "Profil Saya",
-		Category:    "Ekonomi",
+		Category:    "General",
 		Aliases:     []string{"me", "profil", "profile"},
 		Pattern:     regexp.MustCompile(`(?i)^\s*(me|profil|profile)\s*$`),
 		Description: "Menampilkan kartu profil & statistik kamu",
@@ -36,20 +27,11 @@ func init() {
 
 	RegisterCommand(Command{
 		Name:        "Transfer Saldo",
-		Category:    "Ekonomi",
+		Category:    "General",
 		Aliases:     []string{"transfer", "tf"},
 		Pattern:     regexp.MustCompile(`(?i)^(?:transfer|tf)\s+([\d.]+)`),
 		Description: "Transfer balance ke user lain (reply/tag)",
 		Execute:     ExecuteTransfer,
-	})
-
-	RegisterCommand(Command{
-		Name:        "Leaderboard Saldo",
-		Category:    "Ekonomi",
-		Aliases:     []string{"leaderboard", "lb", "rich"},
-		Pattern:     regexp.MustCompile(`(?i)^\s*(leaderboard|lb|rich)\s*$`),
-		Description: "Peringkat user dengan saldo terbanyak",
-		Execute:     ExecuteLeaderboard,
 	})
 }
 
@@ -59,12 +41,6 @@ func dbUserID(ctx *ContextBot) string {
 		return ctx.SenderAlt.String()
 	}
 	return ctx.SenderJID.String()
-}
-
-func ExecuteBalance(ctx *ContextBot) error {
-	return ctx.Reply(fmt.Sprintf(
-		"💳 *SALDO KAMU*\n\n👤 %s\n💰 Balance: *$%.3f*",
-		ctx.PushName, ctx.UserBalance))
 }
 
 func ExecuteProfile(ctx *ContextBot) error {
@@ -131,29 +107,6 @@ func ExecuteTransfer(ctx *ContextBot) error {
 	return ctx.Reply(fmt.Sprintf(
 		"✅ *TRANSFER BERHASIL*\n\n💸 $%.3f → @%s\n💰 Sisa saldo kamu: *$%.3f*",
 		amount, targetNum, ctx.UserBalance-amount))
-}
-
-func ExecuteLeaderboard(ctx *ContextBot) error {
-	top := src.DB.GetTopBalance(10)
-	if len(top) == 0 {
-		return ctx.Reply("📊 Belum ada data leaderboard.")
-	}
-
-	medals := []string{"🥇", "🥈", "🥉"}
-	var sb strings.Builder
-	sb.WriteString("🏆 *LEADERBOARD SALDO*\n\n")
-	for i, u := range top {
-		prefix := fmt.Sprintf("%d.", i+1)
-		if i < len(medals) {
-			prefix = medals[i]
-		}
-		name := u.Name
-		if name == "" {
-			name = strings.Split(u.ID, "@")[0]
-		}
-		sb.WriteString(fmt.Sprintf("%s *%s* — $%.3f\n", prefix, name, u.Balance))
-	}
-	return ctx.Reply(sb.String())
 }
 
 // resolveTargetJID mengambil JID tujuan dari mention atau pesan yang di-reply.

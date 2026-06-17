@@ -7,6 +7,7 @@ import (
 		"crypto/rand"
 	"encoding/hex"
 	     	"strings"
+	     "regexp"
 	     "context"
 	     "go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
@@ -94,6 +95,35 @@ func GenerateIOSMessageID() types.MessageID {
     return types.MessageID("AC" + strings.ToUpper(hex.EncodeToString(b)))
 }
 
+// NewMessageID menghasilkan message ID dengan format NATIVE whatsmeow agar
+// konsisten dengan device terdaftar (mengurangi sinyal "fingerprint mismatch"
+// yang bisa memicu ban). Fallback ke GenerateIOSMessageID bila client nil.
+func NewMessageID(client *whatsmeow.Client) types.MessageID {
+    if client != nil {
+        return client.GenerateMessageID()
+    }
+    return GenerateIOSMessageID()
+}
+
+// botMsgIDPatterns adalah heuristik pola message ID khas library bot (Baileys dkk),
+// yang BUKAN dihasilkan WhatsApp mobile asli. Sengaja dibuat KONSERVATIF (berbasis
+// prefix khas) agar tidak salah-tandai user WA biasa — sinyal utama tetap flood.
+// Mudah ditambah/ditune sesuai temuan di lapangan.
+var botMsgIDPatterns = []*regexp.Regexp{
+    regexp.MustCompile(`^3EB0[0-9A-F]{16,}$`), // Baileys klasik (prefix 3EB0 + hex panjang)
+    regexp.MustCompile(`^BAE5[0-9A-F]{10,}$`), // varian Baileys (prefix BAE5)
+}
+
+// LooksLikeBotMessageID mengembalikan true bila format ID cocok pola library bot.
+func LooksLikeBotMessageID(id string) bool {
+    for _, re := range botMsgIDPatterns {
+        if re.MatchString(id) {
+            return true
+        }
+    }
+    return false
+}
+
 func ReactMessage(
 	client *whatsmeow.Client,
 	evt *events.Message,
@@ -123,4 +153,13 @@ func ReactMessage(
 	)
 
 	return err
+}
+
+// SendTyping mengirim indikator "sedang mengetik" (human-like) tanpa menunda
+// balasan. Aman dipanggil fire-and-forget (go SendTyping(...)).
+func SendTyping(client *whatsmeow.Client, chat types.JID) {
+	if client == nil {
+		return
+	}
+	_ = client.SendChatPresence(context.Background(), chat, types.ChatPresenceComposing, types.ChatPresenceMediaText)
 }

@@ -126,6 +126,19 @@ func (db *Database) createTables() {
 		UNIQUE(code, groupID)
 	);
 
+	CREATE TABLE IF NOT EXISTS group_settings (
+		groupID TEXT PRIMARY KEY,
+		antibot INTEGER DEFAULT 0,
+		updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS group_trust (
+		groupID TEXT NOT NULL,
+		userID TEXT NOT NULL,
+		addedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (groupID, userID)
+	);
+
 
 	CREATE TABLE IF NOT EXISTS group_stats (
 		groupID TEXT NOT NULL,
@@ -193,20 +206,20 @@ func (db *Database) autoCleanupCache() {
 // =============================================
 
 func (db *Database) AddOrUpdateUser(jid, name string) *UserData {
+	// 1. Fast path: cache hit (lock singkat)
 	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	// 1. Cek Cache
 	if cached, exists := db.cache[jid]; exists {
 		cached.Name = name
 		cached.LastSeen = time.Now()
 		cached.MessageCount++
 		// Asynchronous DB Update untuk respons bot instan
 		go db.db.Exec("UPDATE users SET name=?, messageCount=messageCount+1, lastSeen=CURRENT_TIMESTAMP WHERE id=?", name, jid)
+		db.mu.Unlock()
 		return cached
 	}
+	db.mu.Unlock()
 
-	// 2. Jika tidak ada di cache, cek DB
+	// 2. Slow path: query DB TANPA memegang lock (mengurangi contention)
 	userData := &UserData{}
 	err := db.db.QueryRow("SELECT id, name, registeredAt, messageCount, balance, lastSeen, isBlocked, tier FROM users WHERE id = ?", jid).
 		Scan(&userData.ID, &userData.Name, &userData.RegisteredAt, &userData.MessageCount, &userData.Balance, &userData.LastSeen, &userData.IsBlocked, &userData.Tier)
@@ -222,9 +235,19 @@ func (db *Database) AddOrUpdateUser(jid, name string) *UserData {
 		userData.Name = name
 		userData.LastSeen = time.Now()
 		go db.db.Exec("UPDATE users SET name=?, messageCount=messageCount+1, lastSeen=CURRENT_TIMESTAMP WHERE id=?", name, jid)
+	} else {
+		// Error query lain: kembalikan struct minimal agar tidak nil
+		userData = &UserData{ID: jid, Name: name, RegisteredAt: time.Now(), MessageCount: 1, Balance: 2.0, LastSeen: time.Now(), Tier: "free"}
 	}
 
+	// 3. Masukkan ke cache (double-check agar tidak menimpa entri yang dibuat goroutine lain)
+	db.mu.Lock()
+	if existing, ok := db.cache[jid]; ok {
+		db.mu.Unlock()
+		return existing
+	}
 	db.cache[jid] = userData
+	db.mu.Unlock()
 	return userData
 }
 

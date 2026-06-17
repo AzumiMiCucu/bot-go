@@ -16,6 +16,11 @@ type Configuration struct {
 	// Pengaturan fitur referral broadcast otomatis
 	ReferralIntervalHours int     `json:"referralIntervalHours"`
 	ReferralReward        float64 `json:"referralReward"`
+
+	// Mode bot
+	BotMode    string `json:"botMode"`    // "public" (default) atau "self" (hanya owner)
+	PrefixMode bool   `json:"prefixMode"` // false = no-prefix (default), true = wajib prefix
+	PrefixChar string `json:"prefixChar"` // karakter prefix saat PrefixMode aktif (default ".")
 }
 
 var AppConfig *Configuration
@@ -32,6 +37,9 @@ func InitConfig() {
 		OwnerName:             "Azmi",
 		ReferralIntervalHours: 12,
 		ReferralReward:        0.5,
+		BotMode:               "public",
+		PrefixMode:            false,
+		PrefixChar:            ".",
 	}
 
 	// Mengecek apakah file config.json sudah ada
@@ -59,6 +67,12 @@ func InitConfig() {
 		}
 		if AppConfig.ReferralReward <= 0 {
 			AppConfig.ReferralReward = 0.5
+		}
+		if AppConfig.BotMode == "" {
+			AppConfig.BotMode = "public"
+		}
+		if AppConfig.PrefixChar == "" {
+			AppConfig.PrefixChar = "."
 		}
 
 		fmt.Println("[SYSTEM] Konfigurasi berhasil dimuat.")

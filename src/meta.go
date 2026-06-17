@@ -122,7 +122,7 @@ func ReplyMsgWithID(client *whatsmeow.Client, chatJID types.JID, evt *events.Mes
 	if !evt.Info.MessageSource.SenderAlt.IsEmpty() {
 		senderStr = evt.Info.MessageSource.SenderAlt.ToNonAD().String()
 	}
-	msgID := GenerateIOSMessageID()
+	msgID := NewMessageID(client)
 	_, err := client.SendMessage(
 		context.Background(),
 		cleanTarget,

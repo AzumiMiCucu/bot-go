@@ -82,7 +82,7 @@ func sendReply(client *whatsmeow.Client, chatJID types.JID, evt *events.Message,
 		senderStr = evt.Info.MessageSource.SenderAlt.ToNonAD().String()
 	}
 
-	msgID := src.GenerateIOSMessageID()
+	msgID := src.NewMessageID(client)
 
 	ctxInfo := &waProto.ContextInfo{
 		StanzaID:      proto.String(evt.Info.ID),
@@ -181,8 +181,17 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		}()
 	}
 
-	// Command Parsing
-	matchedCommand, extractedArgs := commands.MatchCommand(textMessage)
+	// Command Parsing (hormati mode prefix bila aktif)
+	cmdText := textMessage
+	if src.AppConfig.PrefixMode {
+		p := src.AppConfig.PrefixChar
+		if p != "" && strings.HasPrefix(textMessage, p) {
+			cmdText = strings.TrimSpace(textMessage[len(p):])
+		} else {
+			cmdText = "" // mode prefix aktif tapi tidak diawali prefix → bukan command
+		}
+	}
+	matchedCommand, extractedArgs := commands.MatchCommand(cmdText)
 
 	// Build Context (dibangun lebih awal agar bisa dipakai reply-router & eksekusi command)
 	ctxBot := &commands.ContextBot{
@@ -217,6 +226,21 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		},
 		Print:  src.Print,
 		Button: src.NewButton,
+	}
+
+	// =================================================================
+	// ANTI-BOT: deteksi bot lain / flood → OTP challenge → kick.
+	// Berjalan lebih dulu & tetap aktif walau mode self.
+	// =================================================================
+	if commands.HandleAntibot(ctxBot) {
+		return
+	}
+
+	// =================================================================
+	// MODE SELF: hanya owner yang dilayani (command & AI). Anti-bot tetap jalan.
+	// =================================================================
+	if src.AppConfig.BotMode == "self" && !isOwner {
+		return
 	}
 
 	// =================================================================
@@ -325,6 +349,9 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 	}()
 
 	matchedCommand.SetCooldown(user)
+
+	// Indikator "mengetik" (human-like, fire-and-forget, tidak menunda balasan)
+	go src.SendTyping(client, chatJID)
 
 	// Execute Async dengan Middleware
 	go func() {
