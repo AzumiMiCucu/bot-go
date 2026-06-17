@@ -167,16 +167,20 @@ func sendSongList(ctx *ContextBot, query string, songs []ytSong) error {
 }
 
 // handleYtMusicReply menangani reply nomor dari daftar lagu.
-func handleYtMusicReply(ctx *ContextBot, rc *ReplyContext) error {
+// Mengembalikan true bila reply benar-benar memilih lagu (dikonsumsi).
+// Bila reply TIDAK berkaitan dengan daftar (bukan nomor valid), return false
+// agar pesan tidak direspon play-music & bisa diproses normal.
+func handleYtMusicReply(ctx *ContextBot, rc *ReplyContext) bool {
 	sess, ok := rc.Data.(*ytMusicSession)
 	if !ok {
-		return nil
+		return false
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(ctx.TextMessage))
 	if err != nil || n < 1 || n > len(sess.Songs) {
-		return ctx.Reply("⚠️ Balas dengan nomor lagu yang valid (mis. 1).")
+		return false // bukan pilihan valid → jangan respon di play music
 	}
-	return playSong(ctx, sess.Songs[n-1])
+	_ = playSong(ctx, sess.Songs[n-1])
+	return true
 }
 
 // playSong mengambil audio, kirim kartu metadata (preview link), lalu audio playable.

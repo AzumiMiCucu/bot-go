@@ -117,7 +117,8 @@ func RouteReply(ctx *ContextBot) bool {
 	case "referral":
 		_ = handleReferralClaim(ctx, rc)
 	case "ytmusic":
-		_ = handleYtMusicReply(ctx, rc)
+		// Hanya konsumsi bila reply benar-benar memilih lagu dari daftar.
+		return handleYtMusicReply(ctx, rc)
 	default:
 		return false
 	}

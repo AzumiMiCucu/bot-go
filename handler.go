@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"regexp"
-	"time"
 
 	"bot-go/commands"
 	"bot-go/src"
@@ -39,23 +38,6 @@ func hasMediaContent(msg *waProto.Message) string {
 	return ""
 }
 
-// getAnyContextInfo mengambil ContextInfo dari berbagai tipe pesan (teks/gambar/video).
-func getAnyContextInfo(msg *waProto.Message) *waProto.ContextInfo {
-	if msg == nil {
-		return nil
-	}
-	if m := msg.GetExtendedTextMessage(); m != nil {
-		return m.GetContextInfo()
-	}
-	if m := msg.GetImageMessage(); m != nil {
-		return m.GetContextInfo()
-	}
-	if m := msg.GetVideoMessage(); m != nil {
-		return m.GetContextInfo()
-	}
-	return nil
-}
-
 func ReplyMsg(client *whatsmeow.Client, chatJID types.JID, evt *events.Message, text string) error {
 	_, err := sendReply(client, chatJID, evt, text)
 	return err
@@ -82,7 +64,7 @@ func sendReply(client *whatsmeow.Client, chatJID types.JID, evt *events.Message,
 		senderStr = evt.Info.MessageSource.SenderAlt.ToNonAD().String()
 	}
 
-	msgID := src.GenerateIOSMessageID()
+	msgID := src.GenerateAndroidMessageID()
 
 	ctxInfo := &waProto.ContextInfo{
 		StanzaID:      proto.String(evt.Info.ID),
@@ -252,7 +234,7 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		return
 	}
 
-	// FALLBACK (AUTO AI JIKA BOT DI-TAG ATAU DI-REPLY)
+	// FALLBACK (AUTO AI HANYA JIKA BOT DI-TAG / @-mention)
 	if matchedCommand == nil {
 		if evt.Info.IsGroup {
 			isMentioned := false
@@ -261,19 +243,13 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 			botJID := client.Store.ID.ToNonAD().String()
 			botLID := client.Store.LID.ToNonAD().String()
 
-			ctxInfo := getAnyContextInfo(evt.Message)
-			if ctxInfo != nil {
+			if ctxInfo := evt.Message.GetExtendedTextMessage().GetContextInfo(); ctxInfo != nil {
 				for _, jid := range ctxInfo.GetMentionedJID() {
 					if jid == botJID || jid == botLID {
 						isMentioned = true
 					}
 					numberOnly := strings.Split(jid, "@")[0]
 					cleanPrompt = strings.ReplaceAll(cleanPrompt, "@"+numberOnly, "")
-				}
-				// Trigger juga bila user me-reply pesan bot sendiri
-				participant := ctxInfo.GetParticipant()
-				if participant == botJID || participant == botLID {
-					isMentioned = true
 				}
 			}
 
@@ -286,39 +262,10 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 			cleanPrompt = strings.TrimSpace(cleanPrompt)
 
 			if isMentioned && cleanPrompt != "" {
-				// Cari gambar: di pesan ini, atau di pesan yang di-reply
-				imgMsg := evt.Message.GetImageMessage()
-				if imgMsg == nil && ctxInfo != nil {
-					if q := ctxInfo.GetQuotedMessage(); q != nil && q.GetImageMessage() != nil {
-						imgMsg = q.GetImageMessage()
-					}
-				}
-
 				go func() {
 					src.EnqueueRequest(chatJID, evt)
-
-					if imgMsg != nil {
-						// Mode gambar: download lalu teruskan ke Meta AI dengan caption prompt
-						dlCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-						defer cancel()
-						data, err := client.Download(dlCtx, imgMsg)
-						if err != nil || len(data) == 0 {
-							_ = ReplyMsg(client, chatJID, evt, "❌ Gagal mengunduh gambar untuk diteruskan ke Meta AI.")
-							return
-						}
-						mime := imgMsg.GetMimetype()
-						// Catatan: SendMessage ke JID @bot sering mengembalikan error ack-timeout
-						// walau pesan SUDAH terkirim & Meta AI tetap membalas. Maka error hanya
-						// di-LOG, tidak dibalas ke grup (menghindari spam "❌ Gagal" palsu).
-						if err := src.SendImageToMetaAI(client, cleanPrompt, data, mime); err != nil {
-							fmt.Printf("⚠️ [META AI IMG] kirim selesai dengan warning: %v\n", err)
-						}
-						return
-					}
-
-					// Mode teks biasa — error hanya di-log (lihat catatan di atas).
 					if err := src.SendTextToMetaAI(client, cleanPrompt); err != nil {
-						fmt.Printf("⚠️ [META AI TEXT] kirim selesai dengan warning: %v\n", err)
+						fmt.Printf("⚠️ [META AI] %v\n", err)
 					}
 				}()
 			}
@@ -352,9 +299,6 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 	}()
 
 	matchedCommand.SetCooldown(user)
-
-	// Indikator "mengetik" (human-like, fire-and-forget, tidak menunda balasan)
-	go src.SendTyping(client, chatJID)
 
 	// Execute Async dengan Middleware
 	go func() {

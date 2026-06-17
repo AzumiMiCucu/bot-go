@@ -398,10 +398,12 @@ func (b *ButtonBuilder) SendWithID(ctx *ContextBot, jid types.JID) (string, erro
 			},
 		},
 	}
-	resp, err := ctx.Client.SendMessage(context.Background(), jid.ToNonAD(), msg, whatsmeow.SendRequestExtra{
+	msgID := GenerateAndroidMessageID()
+	_, err = ctx.Client.SendMessage(context.Background(), jid.ToNonAD(), msg, whatsmeow.SendRequestExtra{
+		ID:              msgID,
 		AdditionalNodes: &[]waBinary.Node{bizNode},
 	})
-	return string(resp.ID), err
+	return string(msgID), err
 }
 
 func (b *ButtonBuilder) SendToChat(ctx *ContextBot) error {
@@ -732,8 +734,9 @@ func (b *AIRichBuilder) SendWithID(ctx *ContextBot, jid types.JID) (string, erro
 		},
 	}
 
-	resp, err := ctx.Client.SendMessage(context.Background(), jid.ToNonAD(), msg)
-	return string(resp.ID), err
+	msgID := GenerateAndroidMessageID()
+	_, err := ctx.Client.SendMessage(context.Background(), jid.ToNonAD(), msg, whatsmeow.SendRequestExtra{ID: msgID})
+	return string(msgID), err
 }
 
 func (b *AIRichBuilder) SendToChat(ctx *ContextBot) error {

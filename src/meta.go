@@ -122,7 +122,7 @@ func ReplyMsgWithID(client *whatsmeow.Client, chatJID types.JID, evt *events.Mes
 	if !evt.Info.MessageSource.SenderAlt.IsEmpty() {
 		senderStr = evt.Info.MessageSource.SenderAlt.ToNonAD().String()
 	}
-	msgID := GenerateIOSMessageID()
+	msgID := GenerateAndroidMessageID()
 	_, err := client.SendMessage(
 		context.Background(),
 		cleanTarget,
@@ -328,47 +328,15 @@ func EnqueueRequest(groupJID types.JID, evt *events.Message) {
 }
 
 // SendTextToMetaAI meneruskan pertanyaan teks ke Meta AI.
+// Catatan: untuk JID @bot, whatsmeow otomatis menambahkan MessageSecret &
+// BotMetadata. Bot mengharapkan ExtendedTextMessage (bukan Conversation) —
+// memakai Conversation memicu "server returned error 488" (unrecognized stanza).
 func SendTextToMetaAI(client *whatsmeow.Client, prompt string) error {
-	metaAIJID := types.NewJID(MetaAINumber, "bot")
-	_, err := client.SendMessage(context.Background(), metaAIJID, &waProto.Message{
-		Conversation: proto.String(prompt),
+	_, err := client.SendMessage(context.Background(), types.NewMetaAIJID, &waProto.Message{
+		ExtendedTextMessage: &waProto.ExtendedTextMessage{
+			Text: proto.String(prompt),
+		},
 	})
 	return err
 }
 
-// SendImageToMetaAI mengunggah gambar lalu mengirimkannya (beserta caption/prompt)
-// ke channel Meta AI agar bot bisa "melihat" gambar, bukan sekadar teks.
-func SendImageToMetaAI(client *whatsmeow.Client, prompt string, imageData []byte, mimetype string) error {
-	if len(imageData) == 0 {
-		return fmt.Errorf("data gambar kosong")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	resp, err := client.Upload(ctx, imageData, whatsmeow.MediaImage)
-	if err != nil {
-		return fmt.Errorf("gagal upload gambar ke Meta AI: %v", err)
-	}
-
-	if mimetype == "" {
-		mimetype = "image/jpeg"
-	}
-
-	metaAIJID := types.NewJID(MetaAINumber, "bot")
-	protoMsg := &waProto.Message{
-		ImageMessage: &waProto.ImageMessage{
-			Caption:       proto.String(prompt),
-			URL:           proto.String(resp.URL),
-			DirectPath:    proto.String(resp.DirectPath),
-			MediaKey:      resp.MediaKey,
-			Mimetype:      proto.String(mimetype),
-			FileEncSHA256: resp.FileEncSHA256,
-			FileSHA256:    resp.FileSHA256,
-			FileLength:    proto.Uint64(uint64(len(imageData))),
-		},
-	}
-
-	_, err = client.SendMessage(ctx, metaAIJID, protoMsg)
-	return err
-}

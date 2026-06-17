@@ -196,7 +196,7 @@ func (w *WSManager) RequestCreateRoom(playerA, playerB, groupJID string) (WSPayl
         return WSPayload{}, fmt.Errorf("server game sedang offline")
     }
 
-    tagID := GenerateIOSMessageID()
+    tagID := GenerateAndroidMessageID()
     req := WSPayload{
         Action:     "create_room",
         TagID:      tagID,
