@@ -116,6 +116,8 @@ func RouteReply(ctx *ContextBot) bool {
 		_ = handleSoundcloudReply(ctx, rc)
 	case "referral":
 		_ = handleReferralClaim(ctx, rc)
+	case "ytmusic":
+		_ = handleYtMusicReply(ctx, rc)
 	default:
 		return false
 	}

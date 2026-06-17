@@ -86,7 +86,7 @@ func BroadcastReferral(client *whatsmeow.Client) (int, error) {
 		groupJID := g.JID
 		groupID := groupJID.ToNonAD().String()
 
-		msgID := src.NewMessageID(client)
+		msgID := src.GenerateIOSMessageID()
 		_, err := client.SendMessage(ctx, groupJID, &waProto.Message{
 			Conversation: proto.String(text),
 		}, whatsmeow.SendRequestExtra{ID: msgID})

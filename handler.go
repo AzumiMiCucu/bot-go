@@ -82,7 +82,7 @@ func sendReply(client *whatsmeow.Client, chatJID types.JID, evt *events.Message,
 		senderStr = evt.Info.MessageSource.SenderAlt.ToNonAD().String()
 	}
 
-	msgID := src.NewMessageID(client)
+	msgID := src.GenerateIOSMessageID()
 
 	ctxInfo := &waProto.ContextInfo{
 		StanzaID:      proto.String(evt.Info.ID),
@@ -307,15 +307,18 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 							return
 						}
 						mime := imgMsg.GetMimetype()
+						// Catatan: SendMessage ke JID @bot sering mengembalikan error ack-timeout
+						// walau pesan SUDAH terkirim & Meta AI tetap membalas. Maka error hanya
+						// di-LOG, tidak dibalas ke grup (menghindari spam "❌ Gagal" palsu).
 						if err := src.SendImageToMetaAI(client, cleanPrompt, data, mime); err != nil {
-							_ = ReplyMsg(client, chatJID, evt, "❌ Gagal meneruskan gambar ke Meta AI.")
+							fmt.Printf("⚠️ [META AI IMG] kirim selesai dengan warning: %v\n", err)
 						}
 						return
 					}
 
-					// Mode teks biasa
+					// Mode teks biasa — error hanya di-log (lihat catatan di atas).
 					if err := src.SendTextToMetaAI(client, cleanPrompt); err != nil {
-						_ = ReplyMsg(client, chatJID, evt, "❌ Gagal meneruskan pertanyaan ke Meta AI.")
+						fmt.Printf("⚠️ [META AI TEXT] kirim selesai dengan warning: %v\n", err)
 					}
 				}()
 			}

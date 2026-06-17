@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"bot-go/src"
@@ -16,6 +17,8 @@ import (
 
 // =================================================================
 // PLAY MUSIC dari YouTube Music (API ps.azumi.dev)
+//   play <judul>        → langsung kirim hasil terbaik
+//   play <judul> --all  → tampilkan daftar lagu, user reply nomor
 // =================================================================
 
 func init() {
@@ -24,7 +27,7 @@ func init() {
 		Category:    "General",
 		Aliases:     []string{"play", "ytmusic"},
 		Pattern:     regexp.MustCompile(`(?i)^(?:play|ytmusic)\s+(.+)`),
-		Description: "Putar/kirim audio lagu dari YouTube Music",
+		Description: "Putar lagu YouTube Music (tambah --all untuk pilih dari daftar)",
 		Execute:     ExecutePlay,
 	})
 }
@@ -39,7 +42,10 @@ type ytSong struct {
 	Album struct {
 		Name string `json:"name"`
 	} `json:"album"`
-	Duration int `json:"duration"`
+	Duration   int `json:"duration"`
+	Thumbnails []struct {
+		URL string `json:"url"`
+	} `json:"thumbnails"`
 }
 
 type ytSearchRes struct {
@@ -56,37 +62,127 @@ type ytMp3Res struct {
 	} `json:"result"`
 }
 
+// ytMusicSession menyimpan hasil pencarian untuk dipilih lewat reply.
+type ytMusicSession struct {
+	Songs []ytSong
+}
+
+func (s ytSong) thumb() string {
+	if len(s.Thumbnails) > 0 {
+		return s.Thumbnails[len(s.Thumbnails)-1].URL // ambil resolusi terbesar
+	}
+	return ""
+}
+
+func fmtDuration(sec int) string {
+	if sec <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d:%02d", sec/60, sec%60)
+}
+
 func ExecutePlay(ctx *ContextBot) error {
-	query := strings.TrimSpace(ctx.Args)
+	raw := strings.TrimSpace(ctx.Args)
+	if raw == "" {
+		return ctx.Reply("🎵 Mau putar lagu apa?\nContoh: `play trouble is a friend`\nPilih dari daftar: `play trouble --all`")
+	}
+
+	// Deteksi flag --all
+	showAll := false
+	if regexp.MustCompile(`(?i)(^|\s)--all(\s|$)`).MatchString(raw) {
+		showAll = true
+		raw = strings.TrimSpace(regexp.MustCompile(`(?i)\s*--all\s*`).ReplaceAllString(raw, " "))
+	}
+	query := strings.TrimSpace(raw)
 	if query == "" {
-		return ctx.Reply("🎵 Mau putar lagu apa?\nContoh: `play trouble is a friend`")
+		return ctx.Reply("🎵 Sebutkan judul lagunya. Contoh: `play trouble --all`")
 	}
 
-	_ = ctx.React("⏳")
+	_ = ctx.React("🔎")
 
-	// 1. Cari lagu di YouTube Music
-	searchRes, err := src.YtMusicSearch(query)
-	if err != nil {
-		return ctx.Reply("❌ Gagal mencari lagu. Coba lagi nanti.")
-	}
-	var search ytSearchRes
-	if b, e := json.Marshal(searchRes.Data); e == nil {
-		json.Unmarshal(b, &search)
-	}
-	if !search.Success || len(search.Result) == 0 {
+	songs, err := searchSongs(query)
+	if err != nil || len(songs) == 0 {
 		return ctx.Reply(fmt.Sprintf("😢 Lagu *%s* tidak ditemukan.", query))
 	}
 
-	// Pilih hasil pertama bertipe SONG (atau hasil pertama apa pun)
-	song := search.Result[0]
-	for _, s := range search.Result {
+	if showAll {
+		return sendSongList(ctx, query, songs)
+	}
+
+	// Mode langsung: pilih hasil pertama bertipe SONG
+	best := songs[0]
+	for _, s := range songs {
 		if strings.EqualFold(s.Type, "SONG") {
-			song = s
+			best = s
 			break
 		}
 	}
+	return playSong(ctx, best)
+}
 
-	// 2. Ambil tautan unduhan mp3
+// searchSongs memanggil API dan mengembalikan daftar lagu (maks 10).
+func searchSongs(query string) ([]ytSong, error) {
+	res, err := src.YtMusicSearch(query)
+	if err != nil {
+		return nil, err
+	}
+	var parsed ytSearchRes
+	if b, e := json.Marshal(res.Data); e == nil {
+		json.Unmarshal(b, &parsed)
+	}
+	if !parsed.Success {
+		return nil, fmt.Errorf("pencarian gagal")
+	}
+	songs := parsed.Result
+	if len(songs) > 10 {
+		songs = songs[:10]
+	}
+	return songs, nil
+}
+
+// sendSongList menampilkan daftar lagu (rich card + thumbnail) dan mendaftarkan
+// ke reply-router agar user bisa reply nomor untuk memilih.
+func sendSongList(ctx *ContextBot, query string, songs []ytSong) error {
+	rb := src.NewAIRich().SetTitle(fmt.Sprintf("🎵 Hasil: %s", query)).
+		SetFooter("Balas dengan NOMOR lagu untuk memutar")
+
+	for i, s := range songs {
+		rb.AddText(fmt.Sprintf("*%d.* %s — %s", i+1, s.Name, s.Artist.Name))
+		rb.AddProduct(src.AIProduct{
+			Title:      s.Name,
+			Brand:      s.Artist.Name,
+			Price:      fmtDuration(s.Duration),
+			SalePrice:  s.Album.Name,
+			ProductURL: s.URL,
+			ImageURL:   s.thumb(),
+		})
+	}
+
+	msgID, err := rb.SendToChatWithID(ctx)
+	if err != nil {
+		return ctx.Reply("❌ Gagal menampilkan daftar lagu.")
+	}
+	replyRouter.Register(msgID, "ytmusic", &ytMusicSession{Songs: songs})
+	return nil
+}
+
+// handleYtMusicReply menangani reply nomor dari daftar lagu.
+func handleYtMusicReply(ctx *ContextBot, rc *ReplyContext) error {
+	sess, ok := rc.Data.(*ytMusicSession)
+	if !ok {
+		return nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(ctx.TextMessage))
+	if err != nil || n < 1 || n > len(sess.Songs) {
+		return ctx.Reply("⚠️ Balas dengan nomor lagu yang valid (mis. 1).")
+	}
+	return playSong(ctx, sess.Songs[n-1])
+}
+
+// playSong mengambil audio, kirim kartu metadata (preview link), lalu audio playable.
+func playSong(ctx *ContextBot, song ytSong) error {
+	_ = ctx.React("⏳")
+
 	mp3Res, err := src.YtMp3(song.URL)
 	if err != nil {
 		return ctx.Reply("❌ Gagal mengambil audio lagu ini.")
@@ -99,25 +195,27 @@ func ExecutePlay(ctx *ContextBot) error {
 		return ctx.Reply("❌ Tautan audio tidak tersedia untuk lagu ini.")
 	}
 
-	// 3. Unduh bytes mp3
 	data, _, err := src.DownloadBytes(mp3.Result.DownloadURL)
 	if err != nil || len(data) == 0 {
 		return ctx.Reply("❌ Gagal mengunduh audio.")
 	}
 
-	// 4. Kirim info + audio playable
+	// Kartu metadata + preview link (gaya anichin)
 	title := mp3.Result.Title
 	if title == "" {
 		title = song.Name
 	}
-	info := fmt.Sprintf("🎶 *%s*\n👤 %s", title, song.Artist.Name)
-	if song.Album.Name != "" {
-		info += fmt.Sprintf("\n💽 %s", song.Album.Name)
-	}
-	if song.Duration > 0 {
-		info += fmt.Sprintf("\n⏱️ %d:%02d", song.Duration/60, song.Duration%60)
-	}
-	_ = ctx.Reply(info)
+	_ = src.NewAIRich().
+		SetTitle("🎶 Now Playing").
+		AddProduct(src.AIProduct{
+			Title:      title,
+			Brand:      song.Artist.Name,
+			Price:      fmtDuration(song.Duration),
+			SalePrice:  song.Album.Name,
+			ProductURL: song.URL,
+			ImageURL:   song.thumb(),
+		}).
+		SendToChat(ctx)
 
 	if err := sendAudio(ctx, data, song.Duration); err != nil {
 		return ctx.Reply(fmt.Sprintf("❌ Gagal mengirim audio: %v", err))
