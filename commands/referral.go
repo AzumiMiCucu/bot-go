@@ -67,13 +67,13 @@ func BroadcastReferral(client *whatsmeow.Client) (int, error) {
 		reward = 0.5
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	groups, err := client.GetJoinedGroups(ctx)
+	listCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	groups, err := client.GetJoinedGroups(listCtx)
+	cancel()
 	if err != nil {
 		return 0, err
 	}
+	fmt.Printf("[REFERRAL] %d grup ditemukan, mulai broadcast kode %s...\n", len(groups), code)
 
 	text := fmt.Sprintf(
 		"🎁 *REFERRAL HADIAH!*\n\n"+
@@ -86,11 +86,15 @@ func BroadcastReferral(client *whatsmeow.Client) (int, error) {
 		groupJID := g.JID
 		groupID := groupJID.ToNonAD().String()
 
+		// Context SENDIRI per grup → satu pengiriman lambat tak membatalkan sisanya
+		sendCtx, c := context.WithTimeout(context.Background(), 30*time.Second)
 		msgID := src.GenerateAndroidMessageID()
-		_, err := client.SendMessage(ctx, groupJID, &waProto.Message{
+		_, err := client.SendMessage(sendCtx, groupJID, &waProto.Message{
 			Conversation: proto.String(text),
 		}, whatsmeow.SendRequestExtra{ID: msgID})
+		c()
 		if err != nil {
+			fmt.Printf("[REFERRAL] ❌ gagal kirim ke %s: %v\n", groupID, err)
 			continue
 		}
 
@@ -105,7 +109,7 @@ func BroadcastReferral(client *whatsmeow.Client) (int, error) {
 		time.Sleep(700 * time.Millisecond)
 	}
 
-	fmt.Printf("[REFERRAL] Broadcast kode %s ke %d grup.\n", code, sent)
+	fmt.Printf("[REFERRAL] ✅ Broadcast kode %s terkirim ke %d/%d grup.\n", code, sent, len(groups))
 	return sent, nil
 }
 

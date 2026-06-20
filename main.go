@@ -117,8 +117,6 @@ func main() {
 	// Mulai scheduler latar belakang
 	src.StartAutoReadScheduler(client)
 	commands.StartReferralScheduler(client)
-	// Pastikan package src sudah di-import
-//src.InitGameWS(client)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)

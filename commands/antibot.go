@@ -12,6 +12,7 @@ import (
 
 	"bot-go/src"
 
+	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -42,7 +43,7 @@ const (
 	floodWindow      = 7 * time.Second
 	floodMax         = 6 // >= 6 pesan dalam floodWindow = flood
 	adminCacheTL     = 5 * time.Minute
-	typingWindow     = 40 * time.Second
+	typingTTL        = 1 * time.Hour // "terbukti manusia" hanya berlaku 1 jam sejak ketikan terakhir
 
 	scoreBotID   = 3 // hint: ID khas Baileys (3EB0/BAE5). Sendiri < ambang → butuh korroborasi
 	scoreFlood   = 4 // banyak pesan dalam waktu singkat
@@ -108,17 +109,49 @@ func RecordTyping(chat, sender types.JID) {
 	typingMu.Unlock()
 }
 
-func typedRecently(groupID, user string) bool {
+// typedLately: apakah user ini mengetik dalam typingTTL terakhir (default 1 jam).
+// Kalau ya → "terbukti manusia" sementara → kebal sinyal typing (forward/media/paste
+// aman). Status ini KEDALUWARSA setelah 1 jam tanpa ketikan, supaya bot yang cuma
+// sesekali memicu fitur ber-typing tidak kebal selamanya.
+func typedLately(groupID, user string) bool {
 	if user == "" {
 		return false
 	}
 	typingMu.Lock()
 	t, ok := typingStore[groupID+"|"+user]
 	typingMu.Unlock()
-	return ok && time.Since(t) < typingWindow
+	return ok && time.Since(t) < typingTTL
 }
 
 func presenceActive() bool { return atomic.LoadInt32(&presenceSeen) == 1 }
+
+// isMediaMsg true bila pesan berupa media (foto/video/dokumen/audio/stiker).
+func isMediaMsg(m *waProto.Message) bool {
+	return m.GetImageMessage() != nil || m.GetVideoMessage() != nil ||
+		m.GetDocumentMessage() != nil || m.GetAudioMessage() != nil ||
+		m.GetStickerMessage() != nil
+}
+
+// isForwardedMsg true bila pesan adalah hasil FORWARD (tidak butuh mengetik).
+func isForwardedMsg(m *waProto.Message) bool {
+	var ci *waProto.ContextInfo
+	switch {
+	case m.GetExtendedTextMessage() != nil:
+		ci = m.GetExtendedTextMessage().GetContextInfo()
+	case m.GetImageMessage() != nil:
+		ci = m.GetImageMessage().GetContextInfo()
+	case m.GetVideoMessage() != nil:
+		ci = m.GetVideoMessage().GetContextInfo()
+	case m.GetDocumentMessage() != nil:
+		ci = m.GetDocumentMessage().GetContextInfo()
+	case m.GetAudioMessage() != nil:
+		ci = m.GetAudioMessage().GetContextInfo()
+	}
+	if ci == nil {
+		return false
+	}
+	return ci.GetIsForwarded() || ci.GetForwardingScore() > 0
+}
 
 // ====================== PIPELINE (dipanggil dari handler) ======================
 
@@ -186,11 +219,20 @@ func HandleAntibot(ctx *ContextBot) bool {
 		score += scoreRepeat
 		reasons = append(reasons, "teks berulang")
 	}
-	// Sinyal "tanpa mengetik" hanya dipakai bila presence memang diterima
-	// (hindari false-positive saat presence tidak tersedia di environment).
-	if presenceActive() && !typedRecently(groupID, su) && !typedRecently(groupID, sl) {
+	// Sinyal TYPING canggih: hukum HANYA bila user "tak pernah terlihat mengetik"
+	// di grup ini, DAN pesan ini wajar perlu diketik (teks biasa, bukan media,
+	// bukan forward). Jadi:
+	//   - Manusia yang mengetik dalam 1 jam terakhir → kebal (forward/media/paste aman).
+	//   - Media + caption  → dikecualikan (WA sering tak kirim composing di media).
+	//   - Pesan forward    → dikecualikan (memang tak diketik).
+	//   - Bot yang tak mengetik (atau ketikan terakhirnya >1 jam lalu) & kirim teks → kena.
+	hasText := strings.TrimSpace(ctx.TextMessage) != ""
+	isPlainText := hasText && !isMediaMsg(ctx.Msg.Message)
+	isForwarded := isForwardedMsg(ctx.Msg.Message)
+	if isPlainText && !isForwarded && presenceActive() &&
+		!typedLately(groupID, su) && !typedLately(groupID, sl) {
 		score += scoreNoTyped
-		reasons = append(reasons, "kirim tanpa mengetik")
+		reasons = append(reasons, "tak mengetik (>1 jam)")
 	}
 
 	// DEBUG: tampilkan ID & skor tiap pesan di grup ber-antibot (untuk tuning).
