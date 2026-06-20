@@ -104,7 +104,7 @@ func ExecuteShinigamiSearch(ctx *ContextBot) error {
 
 	_ = ctx.Reply("⏳ Memproses pencarian komik...")
 
-	apiUrl := fmt.Sprintf("https://ashema.my.id/d/finder/shinigami?q=%s", url.QueryEscape(query))
+	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/finder/shinigami?q=%s", url.QueryEscape(query))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
 		return ctx.Reply("❌ Gagal terhubung ke API Shinigami.")
@@ -202,7 +202,7 @@ func handleShinigamiReply(ctx *ContextBot, rc *ReplyContext) error {
 func loadMangaDetail(ctx *ContextBot, mangaID string) error {
 	_ = ctx.React("⏳")
 
-	apiUrl := fmt.Sprintf("https://ashema.my.id/d/fetcher/shinigami?mangaId=%s", url.QueryEscape(mangaID))
+	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/shinigami?mangaId=%s", url.QueryEscape(mangaID))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
 		return ctx.Reply("❌ Gagal memuat detail komik.")
@@ -264,7 +264,7 @@ func loadMangaDetail(ctx *ContextBot, mangaID string) error {
 
 func sendChapterButton(ctx *ContextBot, chapterID string, chapterNum string, base *SessionData) error {
 	_ = ctx.React("⏳")
-	readUrl := fmt.Sprintf("https://ashema.my.id/comic?shinigami=%s", chapterID)
+	readUrl := fmt.Sprintf("https://ps.azumi.dev/comic?shinigami=%s", chapterID)
 
 	// State navigasi baru (bawa data chapter agar before/after & pemilihan chapter lain tetap bisa)
 	navSession := &SessionData{

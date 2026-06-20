@@ -117,7 +117,7 @@ func ExecutePlay(ctx *ContextBot) error {
 			break
 		}
 	}
-	return playSong(ctx, best)
+	return playSong(ctx, best, false) // tanpa --all → metadata teks biasa
 }
 
 // searchSongs memanggil API dan mengembalikan daftar lagu (maks 10).
@@ -179,12 +179,13 @@ func handleYtMusicReply(ctx *ContextBot, rc *ReplyContext) bool {
 	if err != nil || n < 1 || n > len(sess.Songs) {
 		return false // bukan pilihan valid → jangan respon di play music
 	}
-	_ = playSong(ctx, sess.Songs[n-1])
+	_ = playSong(ctx, sess.Songs[n-1], true) // dari daftar --all → kartu AIRich
 	return true
 }
 
-// playSong mengambil audio, kirim kartu metadata (preview link), lalu audio playable.
-func playSong(ctx *ContextBot, song ytSong) error {
+// playSong mengambil audio lalu mengirim metadata + audio playable.
+// useCard=true → kartu AIRich (preview link); false → metadata teks biasa.
+func playSong(ctx *ContextBot, song ytSong, useCard bool) error {
 	_ = ctx.React("⏳")
 
 	mp3Res, err := src.YtMp3(song.URL)
@@ -204,22 +205,38 @@ func playSong(ctx *ContextBot, song ytSong) error {
 		return ctx.Reply("❌ Gagal mengunduh audio.")
 	}
 
-	// Kartu metadata + preview link (gaya anichin)
 	title := mp3.Result.Title
 	if title == "" {
 		title = song.Name
 	}
-	_ = src.NewAIRich().
-		SetTitle("🎶 Now Playing").
-		AddProduct(src.AIProduct{
-			Title:      title,
-			Brand:      song.Artist.Name,
-			Price:      fmtDuration(song.Duration),
-			SalePrice:  song.Album.Name,
-			ProductURL: song.URL,
-			ImageURL:   song.thumb(),
-		}).
-		SendToChat(ctx)
+
+	if useCard {
+		// Kartu metadata + preview link (gaya anichin)
+		_ = src.NewAIRich().
+			SetTitle("🎶 Now Playing").
+			AddProduct(src.AIProduct{
+				Title:      title,
+				Brand:      song.Artist.Name,
+				Price:      fmtDuration(song.Duration),
+				SalePrice:  song.Album.Name,
+				ProductURL: song.URL,
+				ImageURL:   song.thumb(),
+			}).
+			SendToChat(ctx)
+	} else {
+		// Metadata teks biasa
+		info := fmt.Sprintf("🎶 *%s*\n👤 %s", title, song.Artist.Name)
+		if song.Album.Name != "" {
+			info += fmt.Sprintf("\n💽 %s", song.Album.Name)
+		}
+		if song.Duration > 0 {
+			info += fmt.Sprintf("\n⏱️ %s", fmtDuration(song.Duration))
+		}
+		if song.URL != "" {
+			info += fmt.Sprintf("\n🔗 %s", song.URL)
+		}
+		_ = ctx.Reply(info)
+	}
 
 	if err := sendAudio(ctx, data, song.Duration); err != nil {
 		return ctx.Reply(fmt.Sprintf("❌ Gagal mengirim audio: %v", err))

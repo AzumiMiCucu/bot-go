@@ -103,8 +103,8 @@ func ExecuteTikTok(ctx *ContextBot) error {
 		if err != nil {
 			streamVideoUrl = bestVideoUrl // Fallback
 		}
-		// WAJIB QueryEscape agar parameter link streaming tidak bertabrakan dengan ashema.my.id
-		finalVideo := fmt.Sprintf("https://ashema.my.id/watch?url=%s&type=video", url.QueryEscape(streamVideoUrl))
+		// WAJIB QueryEscape agar parameter link streaming tidak bertabrakan dengan ps.azumi.dev
+		finalVideo := fmt.Sprintf("https://ps.azumi.dev/watch?url=%s&type=video", url.QueryEscape(streamVideoUrl))
 
 		// --- 2. PROSES AUDIO (AMANKAN DARI PANIC) ---
 		var finalAudio string
@@ -113,7 +113,7 @@ func ExecuteTikTok(ctx *ContextBot) error {
 			if err != nil {
 				streamAudioUrl = mp3Match[1] // Fallback
 			}
-			finalAudio = fmt.Sprintf("https://ashema.my.id/watch?url=%s&type=audio", url.QueryEscape(streamAudioUrl))
+			finalAudio = fmt.Sprintf("https://ps.azumi.dev/watch?url=%s&type=audio", url.QueryEscape(streamAudioUrl))
 		}
 
 		// Set Tampilan Button

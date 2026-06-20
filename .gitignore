@@ -1,2 +1,3 @@
-
-tmp
+database/
+tmp/
+config.json

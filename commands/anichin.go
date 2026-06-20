@@ -117,7 +117,7 @@ func ExecuteDonghuaSearch(ctx *src.ContextBot) error {
 
 	ctx.Reply("⏳ Memproses pencarian donghua...")
 
-	apiUrl := fmt.Sprintf("https://www.ashema.my.id/d/finder/anichin?q=%s", url.QueryEscape(query))
+	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/finder/anichin?q=%s", url.QueryEscape(query))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
 		ctx.Reply("❌ Gagal terhubung ke API.")
@@ -224,7 +224,7 @@ func handleDonghuaReply(ctx *ContextBot, rc *ReplyContext) error {
 func loadDonghuaDetail(ctx *ContextBot, donghuaURL string) error {
 	_ = ctx.React("⏳")
 
-	apiUrl := fmt.Sprintf("https://www.ashema.my.id/d/fetcher/anichin?url=%s", url.QueryEscape(donghuaURL))
+	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/anichin?url=%s", url.QueryEscape(donghuaURL))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
 		return ctx.Reply("❌ Gagal memuat detail.")
@@ -280,7 +280,7 @@ func loadDonghuaDetail(ctx *ContextBot, donghuaURL string) error {
 func loadEpisodeDetail(ctx *ContextBot, epURL string, base *DonghuaSessionData) error {
 	_ = ctx.React("⏳")
 
-	apiUrl := fmt.Sprintf("https://www.ashema.my.id/d/fetcher/anichin_eps?url=%s", url.QueryEscape(epURL))
+	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/anichin_eps?url=%s", url.QueryEscape(epURL))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
 		return ctx.Reply("❌ Gagal mengekstrak episode.")

@@ -109,7 +109,7 @@ func ExecuteSamehadaSearch(ctx *ContextBot) error {
 
 	_ = ctx.Reply("⏳ Memproses pencarian anime...")
 
-	apiUrl := fmt.Sprintf("https://www.ashema.my.id/d/finder/samehada?q=%s", url.QueryEscape(query))
+	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/finder/samehada?q=%s", url.QueryEscape(query))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
 		return ctx.Reply("❌ Gagal terhubung ke API Samehadaku.")
@@ -209,7 +209,7 @@ func handleSamehadaReply(ctx *ContextBot, rc *ReplyContext) error {
 func loadSamehadaDetail(ctx *ContextBot, urlStr string) error {
 	_ = ctx.React("⏳")
 
-	apiUrl := fmt.Sprintf("https://www.ashema.my.id/d/fetcher/samehada?url=%s", url.QueryEscape(urlStr))
+	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/samehada?url=%s", url.QueryEscape(urlStr))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
 		return ctx.Reply("❌ Gagal memuat detail.")
@@ -262,7 +262,7 @@ func loadSamehadaDetail(ctx *ContextBot, urlStr string) error {
 func loadSamehadaEpisode(ctx *ContextBot, epURL string, currentEpNum int, epMap map[int]string) error {
 	_ = ctx.React("⏳")
 
-	apiUrl := fmt.Sprintf("https://www.ashema.my.id/d/fetcher/samehada_eps?url=%s", url.QueryEscape(epURL))
+	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/samehada_eps?url=%s", url.QueryEscape(epURL))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
 		return ctx.Reply("❌ Gagal memuat link episode.")

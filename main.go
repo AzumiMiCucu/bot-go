@@ -15,6 +15,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
@@ -23,13 +24,38 @@ var client *whatsmeow.Client
 
 func eventHandler(evt interface{}) {
 	switch v := evt.(type) {
+	
 	case *events.Message:
-		// Proses async agar receive-loop whatsmeow tidak terblokir → respon jauh lebih cepat
+		// [OPSIONAL TAPI PENTING UNTUK JAPRI] 
+		// Subscribe ke pengirim agar bot bisa mendeteksi saat dia mengetik di kemudian waktu
+		if !v.Info.IsGroup {
+			client.SubscribePresence(context.Background(), v.Info.Chat)
+		}
+
+		// Proses async agar receive-loop whatsmeow tidak terblokir
 		go MessageHandler(client, v)
+
 	case *events.Connected:
 		fmt.Println("[SYSTEM] ✅ Terhubung ke WhatsApp server.")
+		
+		// [TAMBAHAN WAJIB] Beritahu server WA bahwa bot ini ONLINE
+		err := client.SendPresence(context.Background(), types.PresenceAvailable)
+		if err != nil {
+			fmt.Println("[SYSTEM] ⚠️ Gagal mengirim status online:", err)
+		} else {
+			fmt.Println("[SYSTEM] 🟢 Bot sekarang berstatus Online & siap mendeteksi typing.")
+		}
+
 	case *events.Disconnected:
 		fmt.Println("[SYSTEM] ⚠️ Koneksi terputus. Menunggu rekoneksi...")
+
+	case *events.ChatPresence:
+		// Catat aktivitas "mengetik" untuk sinyal anti-bot (bot biasanya kirim
+		// pesan TANPA composing). Hanya saat composing.
+		if v.State == types.ChatPresenceComposing {
+			commands.RecordTyping(v.MessageSource.Chat, v.MessageSource.Sender)
+			fmt.Printf("[PRESENCE] ⌨️ composing dari %s di %s\n", v.MessageSource.Sender, v.MessageSource.Chat)
+		}
 	}
 }
 

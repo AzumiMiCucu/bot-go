@@ -98,7 +98,7 @@ func ExecuteKompasSearch(ctx *ContextBot) error {
 
 	// Cabang 1: Jika user TIDAK memberikan query (Ambil Trending)
 	if query == "" {
-		apiUrl := "https://www.ashema.my.id/d/other/kompas"
+		apiUrl := "https://ps.azumi.dev/d/other/kompas"
 		resp, err := httpClient.Get(apiUrl)
 		if err != nil {
 			return ctx.Reply("❌ Gagal terhubung ke API Kompas.")
@@ -123,7 +123,7 @@ func ExecuteKompasSearch(ctx *ContextBot) error {
 
 		// Cabang 2: Jika user MEMBERIKAN query (Ambil Pencarian)
 	} else {
-		apiUrl := fmt.Sprintf("https://www.ashema.my.id/d/finder/kompas?q=%s", url.QueryEscape(query))
+		apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/finder/kompas?q=%s", url.QueryEscape(query))
 		resp, err := httpClient.Get(apiUrl)
 		if err != nil {
 			return ctx.Reply("❌ Gagal terhubung ke API Kompas.")
@@ -188,7 +188,7 @@ func handleKompasReply(ctx *ContextBot, rc *ReplyContext) error {
 func loadKompasDetail(ctx *ContextBot, newsURL string) error {
 	_ = ctx.React("⏳")
 
-	apiUrl := fmt.Sprintf("https://www.ashema.my.id/d/fetcher/kompas?url=%s", url.QueryEscape(newsURL))
+	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/kompas?url=%s", url.QueryEscape(newsURL))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
 		return ctx.Reply("❌ Gagal memuat detail berita.")

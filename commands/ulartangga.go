@@ -152,7 +152,7 @@ func init() {
                     return ctx.Reply(fmt.Sprintf("❌ Gagal membuat room: %v", err))
                 }
 
-                gameURL := fmt.Sprintf("https://ashema.my.id/game?room=%s", res.RoomID)
+                gameURL := fmt.Sprintf("https://ps.azumi.dev/game?room=%s", res.RoomID)
 
                 groupMsg := fmt.Sprintf("🎮 *ARENA ULAR TANGGA SIAP!*\n\n👥 @%s VS @%s\n\n🔑 Token telah dikirim ke PM masing-masing pemain.\n\n_Selamat bermain!_", challengerNumber, senderNumber)
                 btn := ctx.Button()

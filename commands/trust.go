@@ -14,22 +14,14 @@ import (
 // =================================================================
 
 func init() {
+	// Satu handler untuk trust & untrust; arah ditentukan via if/switch di dalam.
 	RegisterCommand(Command{
-		Name:        "Trust User",
+		Name:        "Trust / Untrust",
 		Category:    "Group",
-		Aliases:     []string{"trust"},
-		Pattern:     regexp.MustCompile(`(?i)^\s*trust\b.*`),
-		Description: "Tandai user terpercaya (reply/tag) — kebal anti-bot",
-		Execute:     ExecuteTrust,
-	}).Use(GroupOnlyMiddleware)
-
-	RegisterCommand(Command{
-		Name:        "Untrust User",
-		Category:    "Group",
-		Aliases:     []string{"untrust"},
-		Pattern:     regexp.MustCompile(`(?i)^\s*untrust\b.*`),
-		Description: "Cabut status terpercaya user (reply/tag)",
-		Execute:     ExecuteUntrust,
+		Aliases:     []string{"trust", "untrust"},
+		Pattern:     regexp.MustCompile(`(?i)^\s*(un)?trust\b.*`),
+		Description: "Tandai / cabut user terpercaya (reply/tag) — kebal anti-bot",
+		Execute:     ExecuteTrustToggle,
 	}).Use(GroupOnlyMiddleware)
 
 	RegisterCommand(Command{
@@ -47,32 +39,31 @@ func userPart(jid string) string {
 	return strings.Split(jid, "@")[0]
 }
 
-func ExecuteTrust(ctx *ContextBot) error {
+// ExecuteTrustToggle menangani trust DAN untrust dalam satu handler.
+func ExecuteTrustToggle(ctx *ContextBot) error {
 	if admin, _ := isUserAdmin(ctx); !admin {
-		return ctx.Reply("⛔ Hanya admin yang bisa menandai trust.")
+		return ctx.Reply("⛔ Hanya admin yang bisa mengatur trust.")
 	}
-	target := resolveTargetJID(ctx)
-	if target == "" {
-		return ctx.Reply("⚠️ Reply atau tag user yang ingin dipercaya.\nContoh: `trust @user`")
-	}
-	groupID := ctx.ChatJID.ToNonAD().String()
-	up := userPart(target)
-	src.DB.AddTrust(groupID, up)
-	return ctx.Reply(fmt.Sprintf("✅ @%s sekarang *terpercaya* (kebal anti-bot).", up))
-}
 
-func ExecuteUntrust(ctx *ContextBot) error {
-	if admin, _ := isUserAdmin(ctx); !admin {
-		return ctx.Reply("⛔ Hanya admin yang bisa mencabut trust.")
-	}
+	// Deteksi perintah: untrust vs trust
+	isUntrust := strings.HasPrefix(strings.ToLower(strings.TrimSpace(ctx.TextMessage)), "untrust")
+
 	target := resolveTargetJID(ctx)
 	if target == "" {
-		return ctx.Reply("⚠️ Reply atau tag user yang ingin dicabut trust-nya.")
+		return ctx.Reply("⚠️ Reply atau tag user-nya.\nContoh: `trust @user` / `untrust @user`")
 	}
+
 	groupID := ctx.ChatJID.ToNonAD().String()
 	up := userPart(target)
-	src.DB.RemoveTrust(groupID, up)
-	return ctx.Reply(fmt.Sprintf("✅ @%s tidak lagi terpercaya.", up))
+
+	switch {
+	case isUntrust:
+		src.DB.RemoveTrust(groupID, up)
+		return ctx.Reply(fmt.Sprintf("✅ @%s tidak lagi terpercaya.", up))
+	default:
+		src.DB.AddTrust(groupID, up)
+		return ctx.Reply(fmt.Sprintf("✅ @%s sekarang *terpercaya* (kebal anti-bot).", up))
+	}
 }
 
 func ExecuteListTrust(ctx *ContextBot) error {

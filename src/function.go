@@ -102,6 +102,9 @@ func GenerateAndroidMessageID() types.MessageID {
 var botMsgIDPatterns = []*regexp.Regexp{
     regexp.MustCompile(`^3EB0[0-9A-F]{16,}$`), // Baileys klasik (prefix 3EB0 + hex panjang)
     regexp.MustCompile(`^BAE5[0-9A-F]{10,}$`), // varian Baileys (prefix BAE5)
+    regexp.MustCompile(`^AC[0-9A-F]{26,}$`),   // gaya "AC"+hex (banyak bot custom pakai ini)
+    // CATATAN: "AC"+hex juga dipakai WA asli (iOS), jadi di anti-bot ID hanya
+    // dihitung sebagai HINT (+3, di bawah ambang) — tidak pernah men-kick sendirian.
 }
 
 // LooksLikeBotMessageID mengembalikan true bila format ID cocok pola library bot.

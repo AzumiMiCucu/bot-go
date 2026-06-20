@@ -10,6 +10,7 @@ import (
 	_ "image/png"
 	"math"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -34,22 +35,70 @@ func init() {
 	}).Use(GroupOnlyMiddleware)
 }
 
-const FontPath = "src/arialuni.ttf"
+// FontPath otomatis memakai font neobrutalism bila tersedia, jika tidak fallback ke arialuni.
+// Untuk tampilan terbaik, unduh "Archivo Black" (https://fonts.google.com/specimen/Archivo+Black)
+// dan simpan sebagai: src/neobrutalism.ttf
+var FontPath = pickFont()
 
-// --- COLOR PALETTE (Modern Dark Theme) ---
+func pickFont() string {
+	for _, p := range []string{"src/fonts/arialuni.ttf"} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "src/arialuni.ttf"
+}
+
+// --- COLOR PALETTE (NEOBRUTALISM) ---
+// Latar krem, panel putih, garis & teks HITAM tebal, aksen warna ngejreng,
+// bayangan keras (solid, tanpa blur).
 var (
-	BgColor       = color.RGBA{26, 27, 38, 255}    // Dark Blue/Grey Background
-	CardColor     = color.RGBA{36, 40, 59, 255}    // Lighter Panel
-	CardColorAlt  = color.RGBA{41, 46, 66, 255}    // Hover Panel
-	PrimaryColor  = color.RGBA{0, 194, 255, 255}   // Cyan Accent
-	TextColor     = color.RGBA{192, 202, 245, 255} // Light Blueish White
-	TextMuted     = color.RGBA{122, 136, 207, 255} // Muted Text
-	GridLineColor = color.RGBA{50, 52, 74, 255}    // Subtle Grid lines
-	
-	GoldColor   = color.RGBA{255, 193, 7, 255}
+	BgColor       = color.RGBA{255, 246, 224, 255} // Krem
+	CardColor     = color.RGBA{255, 255, 255, 255} // Putih panel
+	CardColorAlt  = color.RGBA{255, 224, 102, 255} // Kuning lembut (placeholder)
+	PrimaryColor  = color.RGBA{255, 209, 0, 255}    // Kuning ngejreng (aksen utama)
+	AccentPink    = color.RGBA{255, 107, 157, 255}  // Pink
+	AccentCyan    = color.RGBA{77, 208, 225, 255}   // Cyan
+	AccentLime    = color.RGBA{163, 230, 53, 255}   // Lime
+	InkColor      = color.RGBA{17, 17, 17, 255}      // Hitam pekat (border/teks/shadow)
+	TextColor     = color.RGBA{17, 17, 17, 255}      // Teks utama (hitam)
+	TextMuted     = color.RGBA{90, 90, 90, 255}      // Teks redup
+	GridLineColor = color.RGBA{210, 205, 190, 255}   // Garis grid
+
+	GoldColor   = color.RGBA{255, 209, 0, 255}
 	SilverColor = color.RGBA{189, 195, 199, 255}
 	BronzeColor = color.RGBA{205, 127, 50, 255}
 )
+
+// neoPanel menggambar panel gaya neobrutalism: bayangan keras + isi + border hitam tebal.
+func neoPanel(dc *gg.Context, x, y, w, h float64, fill color.Color) {
+	const shadow = 10.0
+	const border = 5.0
+	// Bayangan keras (solid hitam, offset kanan-bawah)
+	dc.SetColor(InkColor)
+	dc.DrawRectangle(x+shadow, y+shadow, w, h)
+	dc.Fill()
+	// Isi panel
+	dc.SetColor(fill)
+	dc.DrawRectangle(x, y, w, h)
+	dc.Fill()
+	// Border hitam tebal
+	dc.SetColor(InkColor)
+	dc.SetLineWidth(border)
+	dc.DrawRectangle(x, y, w, h)
+	dc.Stroke()
+}
+
+// neoRect menggambar kotak berisi + border hitam (tanpa bayangan), untuk bar/badge.
+func neoRect(dc *gg.Context, x, y, w, h float64, fill color.Color, border float64) {
+	dc.SetColor(fill)
+	dc.DrawRectangle(x, y, w, h)
+	dc.Fill()
+	dc.SetColor(InkColor)
+	dc.SetLineWidth(border)
+	dc.DrawRectangle(x, y, w, h)
+	dc.Stroke()
+}
 // Regex ini HANYA mendeteksi Emoji, TIDAK akan menghapus Arab/Jepang/Korea
 var emojiRegex = regexp.MustCompile(`[\x{1F600}-\x{1F64F}\x{1F300}-\x{1F5FF}\x{1F680}-\x{1F6FF}\x{1F700}-\x{1F77F}\x{1F780}-\x{1F7FF}\x{1F800}-\x{1F8FF}\x{1F900}-\x{1F9FF}\x{1FA00}-\x{1FA6F}\x{1FA70}-\x{1FAFF}\x{2600}-\x{26FF}\x{2700}-\x{27BF}\x{2300}-\x{23FF}\x{2B50}\x{1F004}\x{1F0CF}\x{25AA}\x{25AB}\x{25B6}\x{25C0}\x{25FB}-\x{25FE}\x{FE0F}]`)
 
@@ -187,10 +236,8 @@ func ExecuteGroupStats(ctx *ContextBot) error {
 	dc.SetColor(BgColor)
 	dc.Clear()
 
-	// 1. HEADER CARD
-	dc.SetColor(CardColor)
-	dc.DrawRoundedRectangle(40, 40, float64(canvasW-80), 260, 20)
-	dc.Fill()
+	// 1. HEADER CARD (neobrutalism)
+	neoPanel(dc, 40, 40, float64(canvasW-80), 260, PrimaryColor)
 
 	// Draw Profile Picture (Circular)
 	avatarRadius := 80.0
@@ -205,14 +252,14 @@ func ExecuteGroupStats(ctx *ContextBot) error {
 		dc.DrawCircle(avatarX, avatarY, avatarRadius)
 		dc.Fill()
 		_ = dc.LoadFontFace(FontPath, 20)
-		dc.SetColor(TextMuted)
+		dc.SetColor(InkColor)
 		dc.DrawStringAnchored("NO IMAGE", avatarX, avatarY, 0.5, 0.5)
 	}
 
-	// Avatar Border
+	// Avatar Border (hitam tebal — neobrutalism)
 	dc.DrawCircle(avatarX, avatarY, avatarRadius)
-	dc.SetLineWidth(4)
-	dc.SetColor(PrimaryColor)
+	dc.SetLineWidth(6)
+	dc.SetColor(InkColor)
 	dc.Stroke()
 
 	// Group Info Text
@@ -229,24 +276,22 @@ func ExecuteGroupStats(ctx *ContextBot) error {
 	dc.SetColor(TextMuted)
 	dc.DrawString(fmt.Sprintf("%d MEMBERS   •   %d ADMINS", memberCount, len(admins)), textX, 170)
 
-	// Stat Badge
-	dc.SetColor(PrimaryColor)
-	dc.DrawRoundedRectangle(textX, 200, 300, 45, 10)
-	dc.Fill()
+	// Stat Badge (kotak putih, border hitam — neobrutalism)
+	neoRect(dc, textX, 200, 320, 46, CardColor, 4)
 	_ = dc.LoadFontFace(FontPath, 18)
-	dc.SetColor(BgColor)
-	dc.DrawStringAnchored(fmt.Sprintf("TOTAL MESSAGES: %s", formatRibuan(totalMsg)), textX+150, 222, 0.5, 0.5)
+	dc.SetColor(InkColor)
+	dc.DrawStringAnchored(fmt.Sprintf("TOTAL MESSAGES: %s", formatRibuan(totalMsg)), textX+160, 224, 0.5, 0.5)
 
-	// 2. CHART CARD
+	// 2. CHART CARD (neobrutalism)
 	chartYStart := 330.0
 	chartHeight := 500.0
-	dc.SetColor(CardColor)
-	dc.DrawRoundedRectangle(40, chartYStart, float64(canvasW-80), chartHeight, 20)
-	dc.Fill()
+	neoPanel(dc, 40, chartYStart, float64(canvasW-80), chartHeight, CardColor)
 
+	// Judul dalam pita kuning
+	neoRect(dc, 70, chartYStart+18, 360, 46, PrimaryColor, 4)
 	_ = dc.LoadFontFace(FontPath, 24)
-	dc.SetColor(TextColor)
-	dc.DrawStringAnchored("MESSAGE ANALYTICS", float64(canvasW)/2, chartYStart+40, 0.5, 0.5)
+	dc.SetColor(InkColor)
+	dc.DrawStringAnchored("MESSAGE ANALYTICS", 250, chartYStart+42, 0.5, 0.5)
 
 	maxValFloat := float64(peakVal)
 	if maxValFloat == 0 {
@@ -308,18 +353,20 @@ func ExecuteGroupStats(ctx *ContextBot) error {
 			barHeight := (float64(val) / yMaxBound) * graphAvailHeight
 			yBase := graphBottom - barHeight
 
+			// Bar tajam + border hitam (neobrutalism). Peak = pink, lain = cyan.
+			barFill := AccentCyan
 			if val == peakVal {
-				dc.SetColor(PrimaryColor) 
-			} else {
-				dc.SetColor(color.RGBA{59, 130, 246, 255}) 
+				barFill = AccentPink
 			}
-
-			dc.DrawRoundedRectangle(xBase, yBase, barWidth, barHeight, barWidth/3)
-			dc.Fill()
+			bw := 2.5
+			if barWidth < 14 {
+				bw = 1.5
+			}
+			neoRect(dc, xBase, yBase, barWidth, barHeight, barFill, bw)
 
 			if numBars <= 24 || val == peakVal {
-				dc.SetColor(TextColor)
-				dc.DrawStringAnchored(strconv.Itoa(val), xBase+(barWidth/2), yBase-10, 0.5, 0.5)
+				dc.SetColor(InkColor)
+				dc.DrawStringAnchored(strconv.Itoa(val), xBase+(barWidth/2), yBase-12, 0.5, 0.5)
 			}
 		}
 	}
@@ -328,13 +375,13 @@ func ExecuteGroupStats(ctx *ContextBot) error {
 	// 3. ADMIN LIST CARD
 	adminYStart := chartYStart + chartHeight + 30
 	adminHeight := float64(canvasH) - adminYStart - 60
-	dc.SetColor(CardColor)
-	dc.DrawRoundedRectangle(40, adminYStart, float64(canvasW-80), adminHeight, 20)
-	dc.Fill()
+	neoPanel(dc, 40, adminYStart, float64(canvasW-80), adminHeight, CardColor)
 
+	// Judul dalam pita lime
+	neoRect(dc, 70, adminYStart+18, 420, 44, AccentLime, 4)
 	_ = dc.LoadFontFace(FontPath, 20)
-	dc.SetColor(TextColor)
-	dc.DrawStringAnchored("GROUP ADMINISTRATORS", float64(canvasW)/2, adminYStart+35, 0.5, 0.5)
+	dc.SetColor(InkColor)
+	dc.DrawStringAnchored("GROUP ADMINISTRATORS", 280, adminYStart+40, 0.5, 0.5)
 
 	_ = dc.LoadFontFace(FontPath, 16)
 	
@@ -356,12 +403,12 @@ func ExecuteGroupStats(ctx *ContextBot) error {
 		xPos := startX + (float64(colIndex) * colWidth)
 		yPos := adminYStart + 90 + float64(adminRow*35)
 
-		// Titik indikator (Bullet Point)
-		dc.SetColor(PrimaryColor)
-		dc.DrawCircle(xPos, yPos-4, 4)
+		// Penanda kotak hitam (neobrutalism)
+		dc.SetColor(InkColor)
+		dc.DrawRectangle(xPos-4, yPos-8, 8, 8)
 		dc.Fill()
 
-		// Teks Nama Admin dengan anchor `0.0` (Artinya Rata Kiri, bukan di tengah)
+		// Teks Nama Admin rata kiri
 		dc.SetColor(TextColor)
 		dc.DrawStringAnchored(adminName, xPos+15, yPos, 0.0, 0.5)
 	}
@@ -401,34 +448,30 @@ func RenderTopMemberReport(ctx *ContextBot, groupID string, dateLabel string) er
 	dc.SetColor(BgColor)
 	dc.Clear()
 
-	// HEADER
-	dc.SetColor(PrimaryColor)
+	// HEADER (pita kuning neobrutalism)
+	neoRect(dc, float64(W)/2-260, 35, 520, 70, PrimaryColor, 5)
+	dc.SetColor(InkColor)
 	_ = dc.LoadFontFace(FontPath, 50)
-	dc.DrawStringAnchored("LEADERBOARD", float64(W)/2, 80, 0.5, 0.5)
+	dc.DrawStringAnchored("LEADERBOARD", float64(W)/2, 72, 0.5, 0.5)
 
-	dc.SetColor(TextColor)
+	dc.SetColor(InkColor)
 	_ = dc.LoadFontFace(FontPath, 28)
-	dc.DrawStringAnchored("MOST ACTIVE MEMBERS", float64(W)/2, 130, 0.5, 0.5)
+	dc.DrawStringAnchored("MOST ACTIVE MEMBERS", float64(W)/2, 150, 0.5, 0.5)
 
 	dc.SetColor(TextMuted)
 	_ = dc.LoadFontFace(FontPath, 18)
-	dc.DrawStringAnchored("Periode: "+dateLabel, float64(W)/2, 165, 0.5, 0.5)
+	dc.DrawStringAnchored("Periode: "+dateLabel, float64(W)/2, 185, 0.5, 0.5)
 
 	// HELPER UNTUK PODIUM TOP 3
 	drawPodium := func(rank int, name string, msgCount string, x, topY float64, col color.RGBA) {
 		pw := 160.0    // Lebar podium
 		baseY := 520.0 // Batas bawah rata untuk semua podium
 
-		// Gambar Balok Podium (rounded atasnya saja)
-		dc.SetColor(col)
-		dc.DrawRoundedRectangle(x-pw/2, topY, pw, baseY-topY, 15)
-		dc.Fill()
-		// Timpa kotak di bawah supaya nampak datar di tanah
-		dc.DrawRectangle(x-pw/2, baseY-15, pw, 15)
-		dc.Fill()
+		// Balok podium tajam + border hitam tebal (neobrutalism)
+		neoRect(dc, x-pw/2, topY, pw, baseY-topY, col, 5)
 
-		// Teks Rank (1, 2, 3) yang besar di dalam podium
-		dc.SetColor(BgColor)
+		// Teks Rank (1, 2, 3) besar hitam di dalam podium
+		dc.SetColor(InkColor)
 		_ = dc.LoadFontFace(FontPath, 65)
 		dc.DrawStringAnchored(strconv.Itoa(rank), x, topY+(baseY-topY)/2, 0.5, 0.5)
 
@@ -437,14 +480,14 @@ func RenderTopMemberReport(ctx *ContextBot, groupID string, dateLabel string) er
 		if len(name) > 13 {
 			name = name[:11] + ".."
 		}
-		dc.SetColor(TextColor)
+		dc.SetColor(InkColor)
 		_ = dc.LoadFontFace(FontPath, 24)
-		dc.DrawStringAnchored(name, x, topY-30, 0.5, 0.5)
+		dc.DrawStringAnchored(name, x, topY-38, 0.5, 0.5)
 
 		// Teks Skor (Pesan)
-		dc.SetColor(PrimaryColor)
+		dc.SetColor(TextMuted)
 		_ = dc.LoadFontFace(FontPath, 20)
-		dc.DrawStringAnchored(msgCount+" Msg", x, topY-60, 0.5, 0.5)
+		dc.DrawStringAnchored(msgCount+" Msg", x, topY-66, 0.5, 0.5)
 	}
 
 	// DRAW PODIUMS (2, 1, 3 order to look like a stage)
@@ -475,32 +518,30 @@ func RenderTopMemberReport(ctx *ContextBot, groupID string, dateLabel string) er
 
 		yPos := listStartY + float64((i-3)*80)
 
-		// Background List Card
-		dc.SetColor(CardColor)
-		dc.DrawRoundedRectangle(80, yPos, float64(W-160), 65, 15)
-		dc.Fill()
+		// Kartu list tajam + border hitam (neobrutalism)
+		neoRect(dc, 80, yPos, float64(W-160), 65, CardColor, 4)
 
-		// Aksen Garis di kiri Card
-		dc.SetColor(CardColorAlt)
-		dc.DrawRoundedRectangle(80, yPos, 60, 65, 15)
-		dc.Fill()
-		dc.DrawRectangle(120, yPos, 20, 65) 
-		dc.Fill()
+		// Blok aksen di kiri (warna selang-seling)
+		accent := AccentCyan
+		if (i-3)%2 == 1 {
+			accent = AccentPink
+		}
+		neoRect(dc, 80, yPos, 70, 65, accent, 4)
 
-		// Teks Rank
+		// Teks Rank (di blok aksen)
 		_ = dc.LoadFontFace(FontPath, 22)
-		dc.SetColor(TextMuted)
-		dc.DrawStringAnchored(rankStr, 110, yPos+32, 0.5, 0.5)
+		dc.SetColor(InkColor)
+		dc.DrawStringAnchored(rankStr, 115, yPos+33, 0.5, 0.5)
 
 		// Teks Nama
 		_ = dc.LoadFontFace(FontPath, 24)
 		dc.SetColor(TextColor)
-		dc.DrawStringAnchored(name, 160, yPos+32, 0, 0.5)
+		dc.DrawStringAnchored(name, 175, yPos+33, 0, 0.5)
 
 		// Teks Skor Message
 		_ = dc.LoadFontFace(FontPath, 24)
-		dc.SetColor(PrimaryColor)
-		dc.DrawStringAnchored(msgCount+" Msg", float64(W)-110, yPos+32, 1.0, 0.5)
+		dc.SetColor(InkColor)
+		dc.DrawStringAnchored(msgCount+" Msg", float64(W)-110, yPos+33, 1.0, 0.5)
 	}
 
 	// FOOTER

@@ -92,7 +92,7 @@ func ExecuteSoundcloud(ctx *ContextBot) error {
 	}
 
 	// Jika bukan URL, lakukan pencarian ke API
-	apiUrl := fmt.Sprintf("https://www.ashema.my.id/d/finder/soundcloud?q=%s", url.QueryEscape(query))
+	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/finder/soundcloud?q=%s", url.QueryEscape(query))
 	resp, err := http.Get(apiUrl)
 	if err != nil {
 		return ctx.Reply("❌ Gagal terhubung ke API SoundCloud.")
@@ -166,7 +166,7 @@ func handleSoundcloudReply(ctx *ContextBot, rc *ReplyContext) error {
 func loadSoundcloudTrack(ctx *ContextBot, trackURL string) error {
 	_ = ctx.React("⏳")
 
-	apiUrl := fmt.Sprintf("https://www.ashema.my.id/d/fetcher/soundcloud?url=%s", url.QueryEscape(trackURL))
+	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/soundcloud?url=%s", url.QueryEscape(trackURL))
 	resp, err := http.Get(apiUrl)
 	if err != nil {
 		return ctx.Reply("❌ Gagal memuat data lagu dari server.")
@@ -196,7 +196,7 @@ func loadSoundcloudTrack(ctx *ContextBot, trackURL string) error {
 	}
 
 	// Merakit Link Streaming Audio
-	finalAudioURL := fmt.Sprintf("https://ashema.my.id/watch?url=%s&type=audio", url.QueryEscape(audioLink))
+	finalAudioURL := fmt.Sprintf("https://ps.azumi.dev/watch?url=%s&type=audio", url.QueryEscape(audioLink))
 
 	// Inisialisasi komponen Button
 	btn := ctx.Button()

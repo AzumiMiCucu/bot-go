@@ -8,7 +8,7 @@ import (
 	"net/url"
 )
 
-const BaseURL = "https://www.ashema.my.id"
+const BaseURL = "https://ps.azumi.dev"
 
 // PSBaseURL adalah base URL API pribadi ps.azumi.dev
 const PSBaseURL = "https://ps.azumi.dev"
