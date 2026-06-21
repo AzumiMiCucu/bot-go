@@ -88,6 +88,9 @@ func BroadcastReferral(client *whatsmeow.Client) (int, error) {
 
 		// Context SENDIRI per grup → satu pengiriman lambat tak membatalkan sisanya
 		sendCtx, c := context.WithTimeout(context.Background(), 30*time.Second)
+		// WAJIB: refresh peserta/device dulu (cegah "participant list hash mismatch"
+		// yang bikin pesan tak sampai walau tanpa error).
+		_, _ = client.GetGroupInfo(sendCtx, groupJID)
 		msgID := src.GenerateAndroidMessageID()
 		_, err := client.SendMessage(sendCtx, groupJID, &waProto.Message{
 			Conversation: proto.String(text),

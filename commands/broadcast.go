@@ -58,6 +58,9 @@ func broadcastText(client *whatsmeow.Client, text string) (int, int) {
 	sent := 0
 	for _, g := range groups {
 		sendCtx, c := context.WithTimeout(context.Background(), 30*time.Second)
+		// WAJIB: refresh daftar peserta/device dulu agar pesan tidak salah-target
+		// (mencegah "participant list hash mismatch" → pesan tak sampai walau no-error).
+		_, _ = client.GetGroupInfo(sendCtx, g.JID)
 		_, err := client.SendMessage(sendCtx, g.JID, &waProto.Message{
 			Conversation: proto.String(text),
 		})
