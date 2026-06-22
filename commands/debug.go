@@ -68,10 +68,10 @@ func ExecuteEval(ctx *ContextBot) error {
 
 	v, err := i.Eval(code)
 	if err != nil {
-		return ctx.Reply("❌ *ERROR EVAL*\n```" + truncate(err.Error(), 3000) + "```")
+		return ctx.Reply(err.Error())
 	}
 
-	return ctx.Reply("✅ *HASIL EVAL*\n```" + truncate(formatEvalResult(v), 3500) + "```")
+	return ctx.Reply(formatEvalResult(v))
 }
 
 func formatEvalResult(v reflect.Value) string {
