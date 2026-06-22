@@ -18,9 +18,9 @@ func init() {
 		Category:    "Owner",
 		Aliases:     []string{"self", "public"},
 		Pattern:     regexp.MustCompile(`(?i)^\s*(self|public)\s*$`),
-		Description: "Atur bot melayani semua orang (public) atau hanya owner (self)",
+		Description: "Atur mode grup INI: public (semua) / self (hanya owner)",
 		Execute:     ExecuteBotMode,
-	}).Use(OwnerOnlyMiddleware)
+	}).Use(OwnerOnlyMiddleware).Use(GroupOnlyMiddleware)
 
 	RegisterCommand(Command{
 		Name:        "Mode Prefix",
@@ -42,18 +42,15 @@ func init() {
 }
 
 func ExecuteBotMode(ctx *ContextBot) error {
+	groupID := ctx.ChatJID.ToNonAD().String()
 	choice := strings.ToLower(strings.TrimSpace(ctx.TextMessage))
-	if strings.HasPrefix(choice, "self") {
-		src.AppConfig.BotMode = "self"
-	} else {
-		src.AppConfig.BotMode = "public"
-	}
-	_ = src.SaveConfig()
 
-	if src.AppConfig.BotMode == "self" {
-		return ctx.Reply("🔒 Mode *SELF* aktif. Bot hanya melayani owner.")
+	if strings.HasPrefix(choice, "self") {
+		src.DB.SetGroupSelf(groupID, true)
+		return ctx.Reply("🔒 Grup ini → mode *SELF*. Hanya owner yang dilayani di sini.")
 	}
-	return ctx.Reply("🌐 Mode *PUBLIC* aktif. Bot melayani semua orang.")
+	src.DB.SetGroupSelf(groupID, false)
+	return ctx.Reply("🌐 Grup ini → mode *PUBLIC*. Semua member dilayani.")
 }
 
 func ExecutePrefixMode(ctx *ContextBot) error {

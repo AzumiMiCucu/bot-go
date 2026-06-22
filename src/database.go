@@ -186,6 +186,7 @@ func (db *Database) createTables() {
 	// Migrasi idempotent: tambah kolom baru bila belum ada (abaikan error "duplicate column")
 	db.db.Exec("ALTER TABLE users ADD COLUMN lastDaily DATETIME")
 	db.db.Exec("ALTER TABLE group_settings ADD COLUMN antilink TEXT DEFAULT ''")
+	db.db.Exec("ALTER TABLE group_settings ADD COLUMN selfmode INTEGER DEFAULT 0")
 }
 
 // autoCleanupCache menghapus data user dari map memori jika tidak aktif > 1 jam

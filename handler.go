@@ -231,9 +231,10 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 	}
 
 	// =================================================================
-	// MODE SELF: hanya owner yang dilayani (command & AI). Anti-bot tetap jalan.
+	// MODE SELF (per-grup): jika grup ini di-set SELF, hanya owner dilayani
+	// (command & AI). Anti-bot/antilink tetap jalan. Chat pribadi tak terpengaruh.
 	// =================================================================
-	if src.AppConfig.BotMode == "self" && !isOwner {
+	if evt.Info.IsGroup && !isOwner && src.DB.IsGroupSelf(chatJID.ToNonAD().String()) {
 		return
 	}
 

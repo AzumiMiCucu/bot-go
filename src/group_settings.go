@@ -26,7 +26,60 @@ var (
 	linksetCache   = make(map[string][]string) // groupID -> daftar pola link diblokir
 	linksetCacheMu sync.RWMutex
 	linksetLoaded  bool
+
+	selfmodeCache   = make(map[string]bool) // groupID -> self mode (true = hanya owner)
+	selfmodeCacheMu sync.RWMutex
+	selfmodeLoaded  bool
 )
+
+// loadSelfmodeCache memuat status self/public tiap grup sekali saja.
+func (db *Database) loadSelfmodeCache() {
+	selfmodeCacheMu.Lock()
+	defer selfmodeCacheMu.Unlock()
+	if selfmodeLoaded {
+		return
+	}
+	rows, err := db.db.Query("SELECT groupID, COALESCE(selfmode,0) FROM group_settings")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var gid string
+			var sm int
+			if rows.Scan(&gid, &sm) == nil && sm == 1 {
+				selfmodeCache[gid] = true
+			}
+		}
+	}
+	selfmodeLoaded = true
+}
+
+// IsGroupSelf mengembalikan true bila grup dalam mode SELF (hanya owner dilayani).
+func (db *Database) IsGroupSelf(groupID string) bool {
+	db.loadSelfmodeCache()
+	selfmodeCacheMu.RLock()
+	defer selfmodeCacheMu.RUnlock()
+	return selfmodeCache[groupID]
+}
+
+// SetGroupSelf mengatur mode self (true) / public (false) untuk grup.
+func (db *Database) SetGroupSelf(groupID string, self bool) {
+	val := 0
+	if self {
+		val = 1
+	}
+	db.db.Exec(`
+		INSERT INTO group_settings (groupID, selfmode, updatedAt) VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(groupID) DO UPDATE SET selfmode=?, updatedAt=CURRENT_TIMESTAMP
+	`, groupID, val, val)
+
+	selfmodeCacheMu.Lock()
+	if self {
+		selfmodeCache[groupID] = true
+	} else {
+		delete(selfmodeCache, groupID)
+	}
+	selfmodeCacheMu.Unlock()
+}
 
 // DefaultLinkPattern: pola default yang diblokir saat antilink ON tanpa custom = link grup WA.
 const DefaultLinkPattern = "chat.whatsapp.com"

@@ -124,13 +124,21 @@ func cleanValue(rv reflect.Value, depth int) interface{} {
 			if t.Field(i).PkgPath != "" { // skip unexported
 				continue
 			}
-			m[t.Field(i).Name] = cleanValue(rv.Field(i), depth+1)
+			cv := cleanValue(rv.Field(i), depth+1)
+			if cv == nil { // jangan tampilkan field bernilai null/nil
+				continue
+			}
+			m[t.Field(i).Name] = cv
 		}
 		return m
 	case reflect.Map:
 		m := map[string]interface{}{}
 		for _, k := range rv.MapKeys() {
-			m[fmt.Sprint(k.Interface())] = cleanValue(rv.MapIndex(k), depth+1)
+			cv := cleanValue(rv.MapIndex(k), depth+1)
+			if cv == nil {
+				continue
+			}
+			m[fmt.Sprint(k.Interface())] = cv
 		}
 		return m
 	case reflect.Slice, reflect.Array:

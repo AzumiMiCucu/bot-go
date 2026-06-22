@@ -47,21 +47,23 @@ func ExecuteAntilink(ctx *ContextBot) error {
 	groupID := ctx.ChatJID.ToNonAD().String()
 	arg := strings.ToLower(strings.TrimSpace(ctx.Args))
 
+	// Tentukan status target: on/off eksplisit, atau toggle bila tanpa arg.
+	var target bool
 	switch arg {
 	case "on":
-		src.DB.SetAntilinkOn(groupID, true)
-		pats := src.DB.GetLinkPatterns(groupID)
-		return ctx.Reply(fmt.Sprintf("🔗 *Antilink AKTIF*\nMemblokir: *%s*\n\n_Atur daftar: `linkset add/del/list`. Pastikan bot admin._", strings.Join(pats, ", ")))
+		target = true
 	case "off":
-		src.DB.SetAntilinkOn(groupID, false)
-		return ctx.Reply("🔗 *Antilink NONAKTIF*.")
+		target = false
 	default:
-		status := "NONAKTIF"
-		if src.DB.IsAntilinkOn(groupID) {
-			status = "AKTIF"
-		}
-		return ctx.Reply(fmt.Sprintf("🔗 Antilink saat ini: *%s*\n\nGunakan: `antilink on` / `antilink off`", status))
+		target = !src.DB.IsAntilinkOn(groupID) // toggle simpel
 	}
+
+	src.DB.SetAntilinkOn(groupID, target)
+	if target {
+		pats := src.DB.GetLinkPatterns(groupID)
+		return ctx.Reply(fmt.Sprintf("🔗 *Antilink: AKTIF* ✅\nBlokir: *%s*\n_Atur daftar: `linkset`. Pastikan bot admin._", strings.Join(pats, ", ")))
+	}
+	return ctx.Reply("🔗 *Antilink: NONAKTIF* ❌")
 }
 
 func ExecuteLinkset(ctx *ContextBot) error {
