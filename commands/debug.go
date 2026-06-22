@@ -3,158 +3,157 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"bot-go/src"
+
+	"github.com/traefik/yaegi/interp"
+	"github.com/traefik/yaegi/stdlib"
 )
+
+// =================================================================
+// EVAL GO (>>) — interpreter Go runtime ala eval Node.js.
+// Owner bisa memanggil variabel & menjalankan fungsi bot secara live.
+// Variabel yang tersedia: Ctx, Client, DB, Config (juga via bot.Ctx dst).
+//   >> 1+2
+//   >> Ctx.PushName
+//   >> Ctx.Reply("halo dari eval")
+//   >> Config.OwnerName
+//   >> DB.GetUser("628xxxx@s.whatsapp.net")
+// ( `$` tetap untuk shell command, terpisah dari ini. )
+// =================================================================
 
 func init() {
 	RegisterCommand(Command{
-		Name:        "Debug Inspector",
+		Name:        "Eval Go",
 		Category:    "Owner",
 		Aliases:     []string{">>"},
-		Pattern:     regexp.MustCompile(`(?i)^>>\s+(.+)`),
-		Description: "Mengintip isi variabel bot mendalam (Khusus Owner)",
-		Execute:     ExecuteDebug,
+		Pattern:     regexp.MustCompile(`(?s)^>>\s+(.+)`),
+		Description: "Evaluasi kode Go live: panggil variabel & fungsi (Owner)",
+		Execute:     ExecuteEval,
 	}).Use(OwnerOnlyMiddleware)
 }
 
-// Fungsi Rekursif untuk membuang tipe "Function" yang bikin Golang Crash saat JSON Marshal
-func sanitizeData(data interface{}) interface{} {
-	switch v := data.(type) {
-	case map[string]interface{}:
-		cleanMap := make(map[string]interface{})
-		for key, val := range v {
-			// Jika tipenya bukan fungsi, simpan dan periksa isinya lagi
-			if fmt.Sprintf("%T", val) != "func(string) error" && fmt.Sprintf("%T", val) != "func(float64) float64" && fmt.Sprintf("%T", val) != "func(float64) (bool, float64)" {
-				cleanMap[key] = sanitizeData(val)
-			} else {
-				cleanMap[key] = "[Function Hidden]" // Tandai bahwa ini adalah fungsi
+func ExecuteEval(ctx *ContextBot) error {
+	code := strings.TrimSpace(ctx.Args)
+	if code == "" {
+		return ctx.Reply("⚠️ Format: `>> <kode go>`\n\nContoh:\n• `>> 1+2`\n• `>> Ctx.PushName`\n• `>> Ctx.Reply(\"halo\")`\n• `>> Config.OwnerName`\n• `>> DB.GetUser(\"628xx@s.whatsapp.net\")`\n\n_Tersedia: Ctx, Client, DB, Config_")
+	}
+
+	i := interp.New(interp.Options{Unrestricted: true})
+	if err := i.Use(stdlib.Symbols); err != nil {
+		return ctx.Reply("❌ Gagal init stdlib: " + err.Error())
+	}
+
+	// Suntik variabel runtime bot ke interpreter (package "bot").
+	if err := i.Use(interp.Exports{
+		"bot/bot": {
+			"Ctx":    reflect.ValueOf(ctx),
+			"Client": reflect.ValueOf(ctx.Client),
+			"DB":     reflect.ValueOf(src.DB),
+			"Config": reflect.ValueOf(src.AppConfig),
+		},
+	}); err != nil {
+		return ctx.Reply("❌ Gagal inject simbol: " + err.Error())
+	}
+
+	// Buat alias global agar bisa dipanggil langsung (Ctx, DB, ...) — best effort.
+	_, _ = i.Eval(`import "bot"`)
+	_, _ = i.Eval(`var Ctx = bot.Ctx`)
+	_, _ = i.Eval(`var Client = bot.Client`)
+	_, _ = i.Eval(`var DB = bot.DB`)
+	_, _ = i.Eval(`var Config = bot.Config`)
+
+	v, err := i.Eval(code)
+	if err != nil {
+		return ctx.Reply("❌ *ERROR EVAL*\n```" + truncate(err.Error(), 3000) + "```")
+	}
+
+	return ctx.Reply("✅ *HASIL EVAL*\n```" + truncate(formatEvalResult(v), 3500) + "```")
+}
+
+func formatEvalResult(v reflect.Value) string {
+	if !v.IsValid() {
+		return "(OK — tidak ada nilai kembalian)"
+	}
+	clean := cleanValue(v, 0)
+	switch clean.(type) {
+	case nil:
+		return "nil"
+	case string, bool,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return fmt.Sprintf("%v", clean)
+	}
+	if b, e := json.MarshalIndent(clean, "", "  "); e == nil {
+		return string(b)
+	}
+	return fmt.Sprintf("%+v", clean)
+}
+
+// cleanValue mengubah nilai apa pun menjadi struktur JSON-able:
+// fungsi/channel dibuang, tipe ber-String() (JID, time, dll) jadi string,
+// dengan batas kedalaman agar aman dari struktur dalam/siklik.
+func cleanValue(rv reflect.Value, depth int) interface{} {
+	if !rv.IsValid() {
+		return nil
+	}
+	if depth > 6 {
+		return "…"
+	}
+	switch rv.Kind() {
+	case reflect.Ptr, reflect.Interface:
+		if rv.IsNil() {
+			return nil
+		}
+		return cleanValue(rv.Elem(), depth)
+	case reflect.Func, reflect.Chan, reflect.UnsafePointer:
+		return "[func]"
+	case reflect.Struct:
+		if rv.CanInterface() {
+			if s, ok := rv.Interface().(fmt.Stringer); ok {
+				return s.String()
 			}
 		}
-		return cleanMap
-	case []interface{}:
-		var cleanSlice []interface{}
-		for _, val := range v {
-			cleanSlice = append(cleanSlice, sanitizeData(val))
+		m := map[string]interface{}{}
+		t := rv.Type()
+		for i := 0; i < rv.NumField(); i++ {
+			if t.Field(i).PkgPath != "" { // skip unexported
+				continue
+			}
+			m[t.Field(i).Name] = cleanValue(rv.Field(i), depth+1)
 		}
-		return cleanSlice
+		return m
+	case reflect.Map:
+		m := map[string]interface{}{}
+		for _, k := range rv.MapKeys() {
+			m[fmt.Sprint(k.Interface())] = cleanValue(rv.MapIndex(k), depth+1)
+		}
+		return m
+	case reflect.Slice, reflect.Array:
+		if rv.Kind() == reflect.Slice && rv.IsNil() {
+			return nil
+		}
+		arr := make([]interface{}, 0, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			arr = append(arr, cleanValue(rv.Index(i), depth+1))
+		}
+		return arr
 	default:
-		return v
+		if rv.CanInterface() {
+			return rv.Interface()
+		}
+		return fmt.Sprintf("%v", rv)
 	}
 }
 
-func ExecuteDebug(ctx *ContextBot) error {
-
-	// 2. Ambil argumen dan pisahkan berdasarkan titik (.)
-	targetPath := strings.TrimSpace(ctx.Args)
-	parts := strings.Split(targetPath, ".")
-	rootVar := strings.ToLower(parts[0])
-
-
-	var rootData interface{}
-
-	// 3. Daftarkan ROOT variabel
-	switch rootVar {
-	case "ctx":
-		rootData = ctx // Sekarang aman untuk meng-assign ini secara langsung!
-	case "msg":
-		rootData = ctx.Msg
-	case "config":
-		rootData = src.AppConfig
-	case "client":
-		rootData = map[string]interface{}{
-			"StoreID": ctx.Client.Store.ID,
-		}
-	default:
-		return ctx.Reply(fmt.Sprintf("⚠️ Variabel root `%s` tidak ditemukan.\n*Pilihan:* ctx, msg, config, client", rootVar))
+func truncate(s string, max int) string {
+	s = "\n" + s + "\n"
+	if len(s) > max {
+		return s[:max] + "\n…(dipotong)"
 	}
-
-	// Trik Golang: Ubah struct ke JSON bytes DENGAN MENGABAIKAN ERROR FUNGSI
-	// Karena json.Marshal standar akan crash, kita buat struct sementara atau biarkan dia membaca tipe dasarnya
-	jsonBytes, err := json.Marshal(rootData)
-	if err != nil && strings.Contains(err.Error(), "unsupported type") {
-		// Jika masih crash karena fungsi (biasanya terjadi karena ctx langsung di-marshal),
-		// kita harus menggunakan format string (fmt.Sprintf) sebagai perantara kasarnya
-		
-		// Tapi cara di atas terlalu jelek. Maka jalan terbaik adalah membuat copy map kasar:
-		if rootVar == "ctx" {
-			rootData = map[string]interface{}{
-				"Client":      "[Client Object]",
-				"Msg":         ctx.Msg,
-				"ChatJID":     ctx.ChatJID.String(),
-				"User": ctx.User,
-				"SenderJID":   ctx.SenderJID.String(),
-				"PushName":    ctx.PushName,
-				"TextMessage": ctx.TextMessage,
-				"Args":        ctx.Args,
-				"UserBalance": ctx.UserBalance,
-				"IsOwner":     ctx.IsOwner,
-				"Reply":       "[Function]",
-			}
-			jsonBytes, _ = json.Marshal(rootData)
-		}
-	}
-
-	var dynamicMap interface{}
-	json.Unmarshal(jsonBytes, &dynamicMap)
-
-	// Bersihkan data dari sisa-sisa fungsi yang mungkin terselip (Sanitization)
-	dynamicMap = sanitizeData(dynamicMap)
-
-	// 4. Jika user meminta data spesifik dengan titik (dot notation)
-	var finalData interface{} = dynamicMap
-
-	if len(parts) > 1 {
-		current := dynamicMap
-		for i := 1; i < len(parts); i++ {
-			key := parts[i]
-
-			if m, ok := current.(map[string]interface{}); ok {
-				found := false
-				for k, v := range m {
-					if strings.EqualFold(k, key) {
-						current = v
-						found = true
-						break
-					}
-				}
-				if !found {
-					return ctx.Reply(fmt.Sprintf("⚠️ Properti `%s` tidak ditemukan pada `%s`", key, strings.Join(parts[:i], ".")))
-				}
-			} else if arr, ok := current.([]interface{}); ok {
-				idx, err := strconv.Atoi(key)
-				if err == nil && idx >= 0 && idx < len(arr) {
-					current = arr[idx]
-				} else {
-					return ctx.Reply(fmt.Sprintf("⚠️ Indeks `%s` tidak valid untuk Array `%s`", key, strings.Join(parts[:i], ".")))
-				}
-			} else {
-				return ctx.Reply(fmt.Sprintf("⚠️ Tidak bisa menggali lebih dalam di properti `%s`", strings.Join(parts[:i], ".")))
-			}
-		}
-		finalData = current
-	}
-
-	// 5. Ubah data final ke JSON yang rapi
-	jsonData, err := json.MarshalIndent(finalData, "", "  ")
-	if err != nil {
-		return ctx.Reply(fmt.Sprintf("❌ Gagal membaca memori: %v", err))
-	}
-
-	// 6. Potong jika kepanjangan
-	outputStr := string(jsonData)
-/*	if len(outputStr) > 4000 {
-		outputStr = outputStr[:4000] + "\n\n... [Terlalu panjang]"
-	}*/
-
-	if !strings.HasPrefix(outputStr, "{") && !strings.HasPrefix(outputStr, "[") {
-		outputStr = strings.Trim(outputStr, "\"")
-	}
-
-	// 7. Kirim hasilnya
-	replyText := fmt.Sprintf("%s", outputStr)
-	return ctx.Reply(replyText)
+	return s
 }

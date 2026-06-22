@@ -4,8 +4,8 @@ go 1.25.0
 
 require (
 	github.com/fogleman/gg v1.3.0
-	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-sqlite3 v1.14.44
+	github.com/traefik/yaegi v0.16.1
 	go.mau.fi/whatsmeow v0.0.0-20260427122815-7514259253a7
 	google.golang.org/protobuf v1.36.11
 )

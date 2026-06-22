@@ -95,27 +95,37 @@ func GenerateAndroidMessageID() types.MessageID {
     return types.MessageID("AC" + strings.ToUpper(hex.EncodeToString(b)))
 }
 
-// botMsgIDPatterns adalah heuristik pola message ID khas library bot (Baileys dkk),
-// yang BUKAN dihasilkan WhatsApp mobile asli. Sengaja dibuat KONSERVATIF (berbasis
-// prefix khas) agar tidak salah-tandai user WA biasa — sinyal utama tetap flood.
-// Mudah ditambah/ditune sesuai temuan di lapangan.
-var botMsgIDPatterns = []*regexp.Regexp{
-    regexp.MustCompile(`^3EB0[0-9A-F]{16,}$`), // Baileys klasik (prefix 3EB0 + hex panjang)
-    regexp.MustCompile(`^BAE5[0-9A-F]{10,}$`), // varian Baileys (prefix BAE5)
-    regexp.MustCompile(`^AC[0-9A-F]{26,}$`), 
-    regexp.MustCompile(`^A5[0-9A-F]{26,}$`),  // gaya "AC"+hex (banyak bot custom pakai ini)
-    // CATATAN: "AC"+hex juga dipakai WA asli (iOS), jadi di anti-bot ID hanya
-    // dihitung sebagai HINT (+3, di bawah ambang) — tidak pernah men-kick sendirian.
+// AndroidExtra mengembalikan SendRequestExtra dengan message-ID custom format
+// ANDROID ("AC"+30hex = 32 char). Pakai ini di SEMUA client.SendMessage agar
+// semua pesan keluar konsisten ber-ID android.
+func AndroidExtra() whatsmeow.SendRequestExtra {
+    return whatsmeow.SendRequestExtra{ID: GenerateAndroidMessageID()}
 }
 
-// LooksLikeBotMessageID mengembalikan true bila format ID cocok pola library bot.
-func LooksLikeBotMessageID(id string) bool {
-    for _, re := range botMsgIDPatterns {
-        if re.MatchString(id) {
-            return true
-        }
+// Klasifikasi tipe device dari FORMAT message-ID. Client WhatsApp asli menghasilkan
+// ID dengan pola khas per-platform. ID yang tidak cocok pola mana pun ("unknown")
+// sangat mungkin dari bot/library custom → dipakai anti-bot sebagai sinyal KUAT.
+var (
+    reDevIOS     = regexp.MustCompile(`^3A.{18}$`)       // iOS
+    reDevWeb     = regexp.MustCompile(`^3E.{20}$`)       // WhatsApp Web
+    reDevAndroid = regexp.MustCompile(`^(.{21}|.{32})$`) // Android (incl. "AC"+30hex = 32 char)
+    reDevDesktop = regexp.MustCompile(`^(3F|.{18}$)`)    // Desktop
+)
+
+// ClassifyDeviceFromID mengembalikan: ios | web | android | desktop | unknown.
+func ClassifyDeviceFromID(id string) string {
+    switch {
+    case reDevIOS.MatchString(id):
+        return "ios"
+    case reDevWeb.MatchString(id):
+        return "web"
+    case reDevAndroid.MatchString(id):
+        return "android"
+    case reDevDesktop.MatchString(id):
+        return "desktop"
+    default:
+        return "unknown"
     }
-    return false
 }
 
 func ReactMessage(
@@ -144,6 +154,7 @@ func ReactMessage(
 				Text: proto.String(emoji),
 			},
 		},
+		AndroidExtra(),
 	)
 
 	return err

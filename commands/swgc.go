@@ -57,8 +57,8 @@ func UpStatusGroupCmd(ctx *src.ContextBot) error {
 		},
 	}
 
-	_, err := client.SendMessage(context.Background(), chatJID, msg)
-	
+	_, err := client.SendMessage(context.Background(), chatJID, msg, AndroidExtra())
+
 	if err != nil {
 		fmt.Println("❌ Gagal mengirim status grup:", err)
 		client.SendMessage(context.Background(), chatJID, &waE2E.Message{

@@ -387,7 +387,7 @@ func ExecuteHidetag(ctx *ContextBot) error {
 		},
 	}
 
-	_, err = ctx.Client.SendMessage(context.Background(), ctx.ChatJID, msg)
+	_, err = ctx.Client.SendMessage(context.Background(), ctx.ChatJID, msg, AndroidExtra())
 	return err
 }
 

@@ -77,7 +77,7 @@ func sendOwnerContact(ctx *ContextBot, ownerNumber, ownerName string, contextInf
 			Vcard:       proto.String(vcard),
 			ContextInfo: contextInfo,
 		},
-	})
+	}, src.AndroidExtra())
 	if err != nil {
 		return ctx.Reply("❌ Gagal mengirim kontak owner.")
 	}
@@ -122,7 +122,7 @@ func sendCreatorCatalog(ctx *ContextBot, ownerNumber, ownerName string, contextI
 			BusinessOwnerJID: proto.String(businessJID),
 			ContextInfo:      contextInfo,
 		},
-	})
+	}, src.AndroidExtra())
 	if err != nil {
 		return ctx.Reply("❌ Terjadi kesalahan saat mengirim katalog creator.")
 	}

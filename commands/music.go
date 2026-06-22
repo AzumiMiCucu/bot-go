@@ -268,6 +268,6 @@ func sendAudio(ctx *ContextBot, data []byte, seconds int) error {
 		msg.AudioMessage.Seconds = proto.Uint32(uint32(seconds))
 	}
 
-	_, err = ctx.Client.SendMessage(context.Background(), ctx.ChatJID.ToNonAD(), msg)
+	_, err = ctx.Client.SendMessage(context.Background(), ctx.ChatJID.ToNonAD(), msg, src.AndroidExtra())
 	return err
 }

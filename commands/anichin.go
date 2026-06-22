@@ -111,7 +111,7 @@ func ExecuteDonghuaSearch(ctx *src.ContextBot) error {
 	if query == "" {
 		_, err := client.SendMessage(context.Background(), chatJID, &waE2E.Message{
 			Conversation: proto.String("❌ Format salah. Contoh: *anichin tales herding gods*"),
-		})
+		}, AndroidExtra())
 		return err
 	}
 

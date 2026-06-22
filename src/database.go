@@ -139,6 +139,12 @@ func (db *Database) createTables() {
 		PRIMARY KEY (groupID, userID)
 	);
 
+	CREATE TABLE IF NOT EXISTS group_linkset (
+		groupID TEXT NOT NULL,
+		pattern TEXT NOT NULL,
+		PRIMARY KEY (groupID, pattern)
+	);
+
 
 	CREATE TABLE IF NOT EXISTS group_stats (
 		groupID TEXT NOT NULL,
@@ -179,6 +185,7 @@ func (db *Database) createTables() {
 
 	// Migrasi idempotent: tambah kolom baru bila belum ada (abaikan error "duplicate column")
 	db.db.Exec("ALTER TABLE users ADD COLUMN lastDaily DATETIME")
+	db.db.Exec("ALTER TABLE group_settings ADD COLUMN antilink TEXT DEFAULT ''")
 }
 
 // autoCleanupCache menghapus data user dari map memori jika tidak aktif > 1 jam

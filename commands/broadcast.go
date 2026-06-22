@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"bot-go/src"
+
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"google.golang.org/protobuf/proto"
@@ -63,7 +65,7 @@ func broadcastText(client *whatsmeow.Client, text string) (int, int) {
 		_, _ = client.GetGroupInfo(sendCtx, g.JID)
 		_, err := client.SendMessage(sendCtx, g.JID, &waProto.Message{
 			Conversation: proto.String(text),
-		})
+		}, src.AndroidExtra())
 		c()
 		if err != nil {
 			fmt.Printf("[BC] ❌ gagal kirim ke %s: %v\n", g.JID, err)

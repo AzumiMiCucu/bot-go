@@ -152,7 +152,7 @@ func ExecuteSticker(ctx *ContextBot) error {
 	}
 
 	// 8. Kirim Pesan Stiker
-	_, err = ctx.Client.SendMessage(context.Background(), ctx.ChatJID, msgToSend)
+	_, err = ctx.Client.SendMessage(context.Background(), ctx.ChatJID, msgToSend, AndroidExtra())
 	return err
 }
 

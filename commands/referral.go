@@ -75,11 +75,7 @@ func BroadcastReferral(client *whatsmeow.Client) (int, error) {
 	}
 	fmt.Printf("[REFERRAL] %d grup ditemukan, mulai broadcast kode %s...\n", len(groups), code)
 
-	text := fmt.Sprintf(
-		"🎁 *REFERRAL HADIAH!*\n\n"+
-			"Reply pesan ini *paling cepat* untuk klaim *$%.3f*!\n"+
-			"Hanya *1 orang tercepat* per grup yang dapat. 🏆\n\n"+
-			"_Kode: %s_", reward, code)
+	text := fmt.Sprintf("🎁 Reply pesan ini buat klaim *$%.3f* — tercepat menang!", reward)
 
 	sent := 0
 	for _, g := range groups {
@@ -157,11 +153,9 @@ func handleReferralClaim(ctx *ContextBot, rc *ReplyContext) error {
 
 	won, newBal := src.DB.ClaimReferral(data.Code, data.GroupID, userJID, data.Reward)
 	if won {
-		return ctx.Reply(fmt.Sprintf(
-			"🎉 *Selamat %s!*\nKamu klaim referral *tercepat*! 🏆\n\n💰 +$%.3f\nSaldo sekarang: *$%.3f*",
-			ctx.PushName, data.Reward, newBal))
+		return ctx.Reply(fmt.Sprintf("🎉 +$%.3f! Saldo: $%.3f", data.Reward, newBal))
 	}
-	return ctx.Reply("😢 Yah, referral ini sudah diklaim member lain yang lebih cepat.")
+	return ctx.Reply("😢 Sudah diklaim duluan.")
 }
 
 // ExecuteRefNow memicu broadcast referral manual (owner).

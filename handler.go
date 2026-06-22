@@ -163,14 +163,19 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		}()
 	}
 
-	// Command Parsing (hormati mode prefix bila aktif)
+	// Command Parsing.
+	// Mode prefix: bila aktif, user SELAIN OWNER wajib mengawali dengan salah satu
+	// prefix (PrefixChar bisa berisi banyak karakter, mis. ".!#"). Owner bebas prefix.
 	cmdText := textMessage
-	if src.AppConfig.PrefixMode {
-		p := src.AppConfig.PrefixChar
-		if p != "" && strings.HasPrefix(textMessage, p) {
-			cmdText = strings.TrimSpace(textMessage[len(p):])
+	if src.AppConfig.PrefixMode && !isOwner {
+		prefixes := src.AppConfig.PrefixChar
+		if prefixes == "" {
+			prefixes = "."
+		}
+		if len(textMessage) > 0 && strings.IndexByte(prefixes, textMessage[0]) >= 0 {
+			cmdText = strings.TrimSpace(textMessage[1:])
 		} else {
-			cmdText = "" // mode prefix aktif tapi tidak diawali prefix → bukan command
+			cmdText = "" // non-owner tanpa prefix → bukan command
 		}
 	}
 	matchedCommand, extractedArgs := commands.MatchCommand(cmdText)
@@ -215,6 +220,13 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 	// Berjalan lebih dulu & tetap aktif walau mode self.
 	// =================================================================
 	if commands.HandleAntibot(ctxBot) {
+		return
+	}
+
+	// =================================================================
+	// ANTILINK: hapus pesan berisi link terlarang (custom per grup).
+	// =================================================================
+	if commands.HandleAntilink(ctxBot) {
 		return
 	}
 

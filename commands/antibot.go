@@ -45,10 +45,10 @@ const (
 	adminCacheTL     = 5 * time.Minute
 	typingTTL        = 1 * time.Hour // "terbukti manusia" hanya berlaku 1 jam sejak ketikan terakhir
 
-	scoreBotID   = 3 // hint: ID khas Baileys (3EB0/BAE5). Sendiri < ambang → butuh korroborasi
-	scoreFlood   = 4 // banyak pesan dalam waktu singkat
-	scoreRepeat  = 4 // teks SAMA dikirim berulang (>=repeatMax)
-	scoreNoTyped = 4 // kirim TANPA "mengetik" (presence aktif) — pembeda utama bot sederhana
+	scoreUnknownID = 4 // ID device tak dikenal (bukan ios/web/android/desktop) → sinyal KUAT
+	scoreFlood     = 4 // banyak pesan dalam waktu singkat
+	scoreRepeat    = 4 // teks SAMA dikirim berulang (>=repeatMax)
+	scoreNoTyped   = 4 // kirim TANPA "mengetik" (presence aktif) — pembeda utama bot sederhana
 
 	repeatWindow = 60 * time.Second
 	repeatMax    = 3 // teks sama >=3x dalam repeatWindow = berulang
@@ -207,9 +207,10 @@ func HandleAntibot(ctx *ContextBot) bool {
 	// === Hitung skor ===
 	score := 0
 	var reasons []string
-	if src.LooksLikeBotMessageID(string(ctx.Msg.Info.ID)) {
-		score += scoreBotID
-		reasons = append(reasons, "ID khas bot")
+	dev := src.ClassifyDeviceFromID(string(ctx.Msg.Info.ID))
+	if dev == "unknown" {
+		score += scoreUnknownID
+		reasons = append(reasons, "ID device tak dikenal")
 	}
 	if isFlooding(key) {
 		score += scoreFlood
@@ -236,8 +237,8 @@ func HandleAntibot(ctx *ContextBot) bool {
 	}
 
 	// DEBUG: tampilkan ID & skor tiap pesan di grup ber-antibot (untuk tuning).
-	fmt.Printf("[ANTIBOT] grup=%s pengirim=%s id=%q skor=%d/%d alasan=%v presence=%v\n",
-		groupID, su, string(ctx.Msg.Info.ID), score, antibotThreshold, reasons, presenceActive())
+	fmt.Printf("[ANTIBOT] grup=%s pengirim=%s id=%q device=%s skor=%d/%d alasan=%v presence=%v\n",
+		groupID, su, string(ctx.Msg.Info.ID), dev, score, antibotThreshold, reasons, presenceActive())
 
 	if score < antibotThreshold {
 		return false
@@ -280,7 +281,7 @@ func scheduleCaptchaTimeout(ctx *ContextBot, key string) {
 // kickUser menghapus pesan pemicu (best-effort) lalu mengeluarkan user.
 func kickUser(ctx *ContextBot, sender types.JID, triggerID types.MessageID, reason string) {
 	revoke := ctx.Client.BuildRevoke(ctx.ChatJID, sender, triggerID)
-	_, _ = ctx.Client.SendMessage(context.Background(), ctx.ChatJID, revoke)
+	_, _ = ctx.Client.SendMessage(context.Background(), ctx.ChatJID, revoke, src.AndroidExtra())
 
 	_, err := ctx.Client.UpdateGroupParticipants(context.Background(), ctx.ChatJID,
 		[]types.JID{sender.ToNonAD()}, "remove")

@@ -270,7 +270,7 @@ func SendChannelCodeMessageCmd(ctx *src.ContextBot) error {
 		},
 	}
 
-	_, err := client.SendMessage(context.Background(), targetChannelJID, msg)
+	_, err := client.SendMessage(context.Background(), targetChannelJID, msg, AndroidExtra())
 	if err != nil {
 		fmt.Println("❌ Gagal mengirim ke Channel:", err)
 		client.SendMessage(context.Background(), evt.Info.Chat, &waE2E.Message{

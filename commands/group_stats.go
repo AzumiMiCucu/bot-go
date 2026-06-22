@@ -588,7 +588,7 @@ func sendCanvasImage(ctx *ContextBot, dc *gg.Context, caption string) error {
 		},
 	}
 
-	_, err = ctx.Client.SendMessage(ctx.Ctx, ctx.ChatJID.ToNonAD(), protoMsg)
+	_, err = ctx.Client.SendMessage(ctx.Ctx, ctx.ChatJID.ToNonAD(), protoMsg, src.AndroidExtra())
 	return err
 }
 

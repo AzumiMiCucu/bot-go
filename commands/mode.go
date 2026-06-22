@@ -63,18 +63,26 @@ func ExecutePrefixMode(ctx *ContextBot) error {
 	_ = src.SaveConfig()
 
 	if on {
-		return ctx.Reply(fmt.Sprintf("⌨️ Mode *PREFIX* aktif. Command wajib diawali `%s`\nContoh: `%smenu`",
-			src.AppConfig.PrefixChar, src.AppConfig.PrefixChar))
+		pc := src.AppConfig.PrefixChar
+		if pc == "" {
+			pc = "."
+		}
+		first := string([]rune(pc)[0])
+		return ctx.Reply(fmt.Sprintf(
+			"⌨️ Mode *PREFIX* aktif.\nNon-owner WAJIB pakai prefix; owner bebas.\nPrefix yang diterima: `%s`\nContoh: `%smenu`",
+			pc, first))
 	}
-	return ctx.Reply("⌨️ Mode *NO-PREFIX* aktif (default). Command tanpa prefix.")
+	return ctx.Reply("⌨️ Mode *NO-PREFIX* aktif. Semua user tanpa prefix.")
 }
 
 func ExecuteSetPrefix(ctx *ContextBot) error {
+	// Boleh lebih dari satu karakter — tiap karakter jadi prefix yang valid.
 	p := strings.TrimSpace(ctx.Args)
-	if p == "" || len(p) > 3 {
-		return ctx.Reply("⚠️ Prefix tidak valid. Contoh: `setprefix !`")
+	p = strings.ReplaceAll(p, " ", "")
+	if p == "" || len(p) > 10 {
+		return ctx.Reply("⚠️ Prefix tidak valid (1-10 karakter). Contoh: `setprefix .` atau `setprefix .!#/`")
 	}
 	src.AppConfig.PrefixChar = p
 	_ = src.SaveConfig()
-	return ctx.Reply(fmt.Sprintf("✅ Prefix diubah menjadi `%s`", p))
+	return ctx.Reply(fmt.Sprintf("✅ Prefix sekarang: `%s` (tiap karakter berlaku sebagai prefix)", p))
 }

@@ -324,7 +324,7 @@ func ExecuteIGStalk(ctx *ContextBot) error {
 			Participant:   proto.String(senderStr),
 			QuotedMessage: ctx.Msg.Message,
 		}
-		_, err := ctx.Client.SendMessage(context.Background(), ctx.ChatJID.ToNonAD(), finalMsg)
+		_, err := ctx.Client.SendMessage(context.Background(), ctx.ChatJID.ToNonAD(), finalMsg, AndroidExtra())
 		if err == nil {
 			return nil
 		}

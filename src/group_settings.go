@@ -18,7 +18,129 @@ var (
 	trustCache   = make(map[string]map[string]bool) // groupID -> set(userID)
 	trustCacheMu sync.RWMutex
 	trustLoaded  bool
+
+	antilinkCache   = make(map[string]bool) // groupID -> antilink ON/OFF
+	antilinkCacheMu sync.RWMutex
+	antilinkLoaded  bool
+
+	linksetCache   = make(map[string][]string) // groupID -> daftar pola link diblokir
+	linksetCacheMu sync.RWMutex
+	linksetLoaded  bool
 )
+
+// DefaultLinkPattern: pola default yang diblokir saat antilink ON tanpa custom = link grup WA.
+const DefaultLinkPattern = "chat.whatsapp.com"
+
+// loadAntilinkCache memuat status on/off antilink semua grup sekali saja.
+func (db *Database) loadAntilinkCache() {
+	antilinkCacheMu.Lock()
+	defer antilinkCacheMu.Unlock()
+	if antilinkLoaded {
+		return
+	}
+	rows, err := db.db.Query("SELECT groupID, COALESCE(antilink,'') FROM group_settings")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var gid, val string
+			if rows.Scan(&gid, &val) == nil && val == "1" {
+				antilinkCache[gid] = true
+			}
+		}
+	}
+	antilinkLoaded = true
+}
+
+// IsAntilinkOn mengembalikan status antilink grup (on/off).
+func (db *Database) IsAntilinkOn(groupID string) bool {
+	db.loadAntilinkCache()
+	antilinkCacheMu.RLock()
+	defer antilinkCacheMu.RUnlock()
+	return antilinkCache[groupID]
+}
+
+// SetAntilinkOn menyalakan/mematikan antilink grup.
+func (db *Database) SetAntilinkOn(groupID string, on bool) {
+	val := ""
+	if on {
+		val = "1"
+	}
+	db.db.Exec(`
+		INSERT INTO group_settings (groupID, antilink, updatedAt) VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(groupID) DO UPDATE SET antilink=?, updatedAt=CURRENT_TIMESTAMP
+	`, groupID, val, val)
+
+	antilinkCacheMu.Lock()
+	if on {
+		antilinkCache[groupID] = true
+	} else {
+		delete(antilinkCache, groupID)
+	}
+	antilinkCacheMu.Unlock()
+}
+
+func (db *Database) loadLinksetCache() {
+	linksetCacheMu.Lock()
+	defer linksetCacheMu.Unlock()
+	if linksetLoaded {
+		return
+	}
+	rows, err := db.db.Query("SELECT groupID, pattern FROM group_linkset")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var gid, pat string
+			if rows.Scan(&gid, &pat) == nil {
+				linksetCache[gid] = append(linksetCache[gid], pat)
+			}
+		}
+	}
+	linksetLoaded = true
+}
+
+// GetLinkPatterns mengembalikan daftar pola link yang diblokir grup.
+// Bila kosong → default [chat.whatsapp.com] (link grup WA).
+func (db *Database) GetLinkPatterns(groupID string) []string {
+	db.loadLinksetCache()
+	linksetCacheMu.RLock()
+	pats := linksetCache[groupID]
+	linksetCacheMu.RUnlock()
+	if len(pats) == 0 {
+		return []string{DefaultLinkPattern}
+	}
+	out := make([]string, len(pats))
+	copy(out, pats)
+	return out
+}
+
+// AddLinkPattern menambah pola link yang diblokir.
+func (db *Database) AddLinkPattern(groupID, pattern string) {
+	db.db.Exec("INSERT OR IGNORE INTO group_linkset (groupID, pattern) VALUES (?, ?)", groupID, pattern)
+	linksetCacheMu.Lock()
+	for _, p := range linksetCache[groupID] {
+		if p == pattern {
+			linksetCacheMu.Unlock()
+			return
+		}
+	}
+	linksetCache[groupID] = append(linksetCache[groupID], pattern)
+	linksetCacheMu.Unlock()
+}
+
+// RemoveLinkPattern menghapus pola link dari daftar.
+func (db *Database) RemoveLinkPattern(groupID, pattern string) {
+	db.db.Exec("DELETE FROM group_linkset WHERE groupID=? AND pattern=?", groupID, pattern)
+	linksetCacheMu.Lock()
+	cur := linksetCache[groupID]
+	out := cur[:0]
+	for _, p := range cur {
+		if p != pattern {
+			out = append(out, p)
+		}
+	}
+	linksetCache[groupID] = out
+	linksetCacheMu.Unlock()
+}
 
 // loadAntibotCache memuat semua group_settings ke cache sekali saja.
 func (db *Database) loadAntibotCache() {

@@ -111,7 +111,7 @@ func ForwardMedia(client *whatsmeow.Client, targetJID types.JID, origEvt *events
 		},
 	}
 
-	_, err = client.SendMessage(ctx, targetJID, protoMsg)
+	_, err = client.SendMessage(ctx, targetJID, protoMsg, AndroidExtra())
 	return err
 }
 
@@ -156,7 +156,7 @@ func EditGroupMsg(client *whatsmeow.Client, chatJID types.JID, targetMsgID strin
 	}
 	_, err := client.SendMessage(context.Background(), chatJID.ToNonAD(), &waProto.Message{
 		ProtocolMessage: editProto,
-	})
+	}, AndroidExtra())
 	return err
 }
 
