@@ -701,7 +701,7 @@ func (b *AIRichBuilder) SendWithID(ctx *ContextBot, jid types.JID) (string, erro
 		}
 	}
 
-	// Fitur Forwarded Wajib Meta AI
+	// Forwarded AI Bot Message wrapper (WA metadata)
 	if ci == nil {
 		ci = &waE2E.ContextInfo{}
 	}

@@ -1,4 +1,4 @@
-//main.go
+// main.go
 package main
 
 import (
@@ -24,12 +24,13 @@ var client *whatsmeow.Client
 
 func eventHandler(evt interface{}) {
 	switch v := evt.(type) {
-	
+
 	case *events.Message:
-		// [OPSIONAL TAPI PENTING UNTUK JAPRI] 
+		// [OPSIONAL TAPI PENTING UNTUK JAPRI]
 		// Subscribe ke pengirim agar bot bisa mendeteksi saat dia mengetik di kemudian waktu
 		if !v.Info.IsGroup {
-			client.SubscribePresence(context.Background(), v.Info.Chat)
+			// Jangan blokir receive-loop whatsmeow untuk network call presence.
+			go client.SubscribePresence(context.Background(), v.Info.Chat)
 		}
 
 		// Proses async agar receive-loop whatsmeow tidak terblokir
@@ -37,7 +38,7 @@ func eventHandler(evt interface{}) {
 
 	case *events.Connected:
 		fmt.Println("[SYSTEM] ✅ Terhubung ke WhatsApp server.")
-		
+
 		// [TAMBAHAN WAJIB] Beritahu server WA bahwa bot ini ONLINE
 		err := client.SendPresence(context.Background(), types.PresenceAvailable)
 		if err != nil {
@@ -48,13 +49,26 @@ func eventHandler(evt interface{}) {
 
 	case *events.Disconnected:
 		fmt.Println("[SYSTEM] ⚠️ Koneksi terputus. Menunggu rekoneksi...")
+		// Tutup semua panggilan aktif agar tidak ada media-goroutine yang menggantung.
+		if n := src.HangupAllCalls(); n > 0 {
+			fmt.Printf("[CALL] 🧹 %d panggilan aktif ditutup karena koneksi terputus.\n", n)
+		}
 
 	case *events.ChatPresence:
 		// Catat aktivitas "mengetik" untuk sinyal anti-bot (bot biasanya kirim
 		// pesan TANPA composing). Hanya saat composing.
 		if v.State == types.ChatPresenceComposing {
 			commands.RecordTyping(v.MessageSource.Chat, v.MessageSource.Sender)
-			fmt.Printf("[PRESENCE] ⌨️ composing dari %s di %s\n", v.MessageSource.Sender, v.MessageSource.Chat)
+			//	fmt.Printf("[PRESENCE] ⌨️ composing dari %s di %s\n", v.MessageSource.Sender, v.MessageSource.Chat)
+		}
+
+	case *events.GroupInfo:
+		// Sambutan / perpisahan grup (welcome & goodbye).
+		if len(v.Join) > 0 {
+			go commands.HandleGroupJoin(client, v)
+		}
+		if len(v.Leave) > 0 {
+			go commands.HandleGroupLeave(client, v)
 		}
 	}
 }
@@ -63,7 +77,9 @@ func main() {
 	src.InitConfig()
 
 	src.InitDatabase()
-	
+	if err := src.InitMessageStore(); err != nil {
+		fmt.Printf("[DB] ⚠️ msg.db gagal diinisialisasi: %v\n", err)
+	}
 
 	fmt.Printf("[SYSTEM] 📚 Memuat %d modul perintah...\n", len(src.CommandRegistry))
 
@@ -78,9 +94,15 @@ func main() {
 		panic(err)
 	}
 
-	clientLog := waLog.Stdout("Client", "INFO", true)
+	// Level WARN di produksi: DEBUG mencetak tiap node XMPP masuk/keluar
+	// (I/O sinkron yang sangat berat & memperlambat respon di bawah beban).
+	clientLog := waLog.Stdout("Client", "WARN", true)
 	client = whatsmeow.NewClient(deviceStore, clientLog)
 	client.AddEventHandler(eventHandler)
+
+	// Pasang stack panggilan (meowcaller) SEBELUM Connect() agar intersepsi
+	// node <call>/<ack> level-rendah aktif sebelum receive-loop berjalan.
+	src.InitCaller(client)
 
 	if client.Store.ID == nil {
 		err = client.Connect()
@@ -123,6 +145,8 @@ func main() {
 	<-c
 
 	fmt.Println("\n[SYSTEM] 🛑 Mematikan layanan...")
+	src.HangupAllCalls()
 	client.Disconnect()
 	src.DB.Close()
+	src.CloseMessageStore()
 }

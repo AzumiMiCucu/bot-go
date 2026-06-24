@@ -21,6 +21,9 @@ type Configuration struct {
 	BotMode    string `json:"botMode"`    // "public" (default) atau "self" (hanya owner)
 	PrefixMode bool   `json:"prefixMode"` // false = no-prefix (default), true = wajib prefix
 	PrefixChar string `json:"prefixChar"` // karakter prefix saat PrefixMode aktif (default ".")
+
+	// Panggilan masuk: bila true, semua call ke bot ditolak otomatis (anti-call).
+	AntiCall bool `json:"antiCall"`
 }
 
 var AppConfig *Configuration

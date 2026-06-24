@@ -10,11 +10,11 @@ import (
 )
 
 // =================================================================
-// ANTILINK (2 command terpisah):
-//   antilink on|off        → nyalakan / matikan
-//   linkset add <pola>     → tambah link yang diblokir
-//   linkset del <pola>     → hapus link dari daftar
-//   linkset list           → lihat daftar
+// ANTILINK (SATU command, alias: antilink / linkset):
+//   antilink on|off            → nyalakan / matikan (tanpa arg = toggle)
+//   antilink add <pola>        → tambah link yang diblokir
+//   antilink del <pola>        → hapus link dari daftar
+//   antilink list              → lihat daftar
 // Default (saat ON tanpa custom): blokir link grup WA (chat.whatsapp.com).
 // Pesan pelanggar dihapus (bot harus admin) + peringatan.
 // Admin / owner / trusted dikecualikan.
@@ -24,19 +24,10 @@ func init() {
 	RegisterCommand(Command{
 		Name:        "Anti-Link",
 		Category:    "Group",
-		Aliases:     []string{"antilink"},
-		Pattern:     regexp.MustCompile(`(?i)^\s*antilink(?:\s+(on|off))?\s*$`),
-		Description: "Nyalakan/matikan antilink grup (admin)",
+		Aliases:     []string{"antilink", "linkset"},
+		Pattern:     regexp.MustCompile(`(?i)^\s*(?:antilink|linkset)(?:\s+(.+))?\s*$`),
+		Description: "Antilink grup: on/off + kelola daftar (add/del/list) — admin",
 		Execute:     ExecuteAntilink,
-	}).Use(GroupOnlyMiddleware)
-
-	RegisterCommand(Command{
-		Name:        "Link Set",
-		Category:    "Group",
-		Aliases:     []string{"linkset"},
-		Pattern:     regexp.MustCompile(`(?i)^\s*linkset(?:\s+(.+))?\s*$`),
-		Description: "Kelola daftar link yang diblokir: add/del/list (admin)",
-		Execute:     ExecuteLinkset,
 	}).Use(GroupOnlyMiddleware)
 }
 
@@ -45,48 +36,76 @@ func ExecuteAntilink(ctx *ContextBot) error {
 		return ctx.Reply("⛔ Hanya admin yang bisa mengatur antilink.")
 	}
 	groupID := ctx.ChatJID.ToNonAD().String()
-	arg := strings.ToLower(strings.TrimSpace(ctx.Args))
+	args := strings.Fields(strings.TrimSpace(ctx.Args))
 
-	// Tentukan status target: on/off eksplisit, atau toggle bila tanpa arg.
-	var target bool
-	switch arg {
-	case "on":
-		target = true
-	case "off":
-		target = false
-	default:
-		target = !src.DB.IsAntilinkOn(groupID) // toggle simpel
+	action := ""
+	if len(args) > 0 {
+		action = strings.ToLower(args[0])
 	}
 
+	switch action {
+	case "add", "tambah", "del", "delete", "hapus", "rm":
+		return linksetModify(ctx, groupID, action, args)
+	case "list", "daftar":
+		return linksetList(ctx, groupID)
+	case "on":
+		return antilinkToggle(ctx, groupID, true)
+	case "off":
+		return antilinkToggle(ctx, groupID, false)
+	case "help", "bantuan", "?":
+		return ctx.Reply(antilinkHelp())
+	case "status", "show":
+		return antilinkStatus(ctx, groupID)
+	default:
+		// Tanpa arg → toggle status.
+		return antilinkToggle(ctx, groupID, !src.DB.IsAntilinkOn(groupID))
+	}
+}
+
+func antilinkToggle(ctx *ContextBot, groupID string, target bool) error {
 	src.DB.SetAntilinkOn(groupID, target)
 	if target {
 		pats := src.DB.GetLinkPatterns(groupID)
-		return ctx.Reply(fmt.Sprintf("🔗 *Antilink: AKTIF* ✅\nBlokir: *%s*\n_Atur daftar: `linkset`. Pastikan bot admin._", strings.Join(pats, ", ")))
+		return ctx.Reply(fmt.Sprintf("🔗 *Antilink: AKTIF* ✅\nBlokir: *%s*\n_Kelola daftar: `antilink add/del/list`. Pastikan bot admin._", strings.Join(pats, ", ")))
 	}
 	return ctx.Reply("🔗 *Antilink: NONAKTIF* ❌")
 }
 
-func ExecuteLinkset(ctx *ContextBot) error {
-	if admin, _ := isUserAdmin(ctx); !admin {
-		return ctx.Reply("⛔ Hanya admin yang bisa mengatur daftar link.")
+func antilinkStatus(ctx *ContextBot, groupID string) error {
+	status := "❌ OFF"
+	if src.DB.IsAntilinkOn(groupID) {
+		status = "✅ ON"
 	}
-	groupID := ctx.ChatJID.ToNonAD().String()
-	args := strings.Fields(strings.TrimSpace(ctx.Args))
+	pats := src.DB.GetLinkPatterns(groupID)
+	return ctx.Reply(fmt.Sprintf("🔗 *Antilink*\n\nStatus : %s\nBlokir : %s\n\n_Bantuan: `antilink help`._",
+		status, strings.Join(pats, ", ")))
+}
 
-	if len(args) == 0 || strings.ToLower(args[0]) == "list" {
-		pats := src.DB.GetLinkPatterns(groupID)
-		var sb strings.Builder
-		sb.WriteString("🔗 *DAFTAR LINK DIBLOKIR*\n\n")
-		for i, p := range pats {
-			sb.WriteString(fmt.Sprintf("%d. `%s`\n", i+1, p))
-		}
-		sb.WriteString("\n`linkset add <pola>` · `linkset del <pola>`")
-		return ctx.Reply(sb.String())
+func antilinkHelp() string {
+	return "📖 *Antilink*\n\n" +
+		"`antilink on` / `antilink off` _(tanpa arg = toggle)_\n" +
+		"`antilink add <pola>` — tambah link diblokir\n" +
+		"`antilink del <pola>` — hapus dari daftar\n" +
+		"`antilink list` — lihat daftar\n" +
+		"`antilink status` — status singkat\n\n" +
+		"_Default blokir:_ `chat.whatsapp.com`. Pesan pelanggar dihapus (bot harus admin). " +
+		"Admin/trusted dikecualikan."
+}
+
+func linksetList(ctx *ContextBot, groupID string) error {
+	pats := src.DB.GetLinkPatterns(groupID)
+	var sb strings.Builder
+	sb.WriteString("🔗 *DAFTAR LINK DIBLOKIR*\n\n")
+	for i, p := range pats {
+		sb.WriteString(fmt.Sprintf("%d. `%s`\n", i+1, p))
 	}
+	sb.WriteString("\n`antilink add <pola>` · `antilink del <pola>`")
+	return ctx.Reply(sb.String())
+}
 
-	action := strings.ToLower(args[0])
+func linksetModify(ctx *ContextBot, groupID, action string, args []string) error {
 	if len(args) < 2 {
-		return ctx.Reply("⚠️ Format: `linkset add <pola>` / `linkset del <pola>`\nContoh: `linkset add tiktok.com`")
+		return ctx.Reply("⚠️ Format: `antilink add <pola>` / `antilink del <pola>`\nContoh: `antilink add tiktok.com`")
 	}
 	pattern := strings.ToLower(strings.TrimSpace(args[1]))
 
@@ -94,11 +113,9 @@ func ExecuteLinkset(ctx *ContextBot) error {
 	case "add", "tambah":
 		src.DB.AddLinkPattern(groupID, pattern)
 		return ctx.Reply(fmt.Sprintf("✅ Ditambahkan ke daftar blokir: `%s`", pattern))
-	case "del", "delete", "hapus", "rm":
+	default: // del/delete/hapus/rm
 		src.DB.RemoveLinkPattern(groupID, pattern)
 		return ctx.Reply(fmt.Sprintf("✅ Dihapus dari daftar blokir: `%s`", pattern))
-	default:
-		return ctx.Reply("⚠️ Aksi tidak dikenal. Pakai: `add`, `del`, atau `list`.")
 	}
 }
 
@@ -129,15 +146,11 @@ func HandleAntilink(ctx *ContextBot) bool {
 	}
 
 	// Kecualikan admin / trusted
-	su := ctx.SenderJID.ToNonAD().User
-	sl := ctx.SenderAlt.ToNonAD().User
-	if (su != "" && src.DB.IsTrusted(groupID, su)) || (sl != "" && src.DB.IsTrusted(groupID, sl)) {
-		return false
-	}
-	if isCachedAdmin(ctx, groupID) {
+	if groupModExempt(ctx, groupID) {
 		return false
 	}
 
+	su := ctx.SenderJID.ToNonAD().User
 	revoke := ctx.Client.BuildRevoke(ctx.ChatJID, ctx.SenderJID, ctx.Msg.Info.ID)
 	_, _ = ctx.Client.SendMessage(context.Background(), ctx.ChatJID, revoke, src.AndroidExtra())
 	_ = ctx.Reply(fmt.Sprintf("🚫 @%s, link tidak diperbolehkan di grup ini.", su))

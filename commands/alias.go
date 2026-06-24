@@ -11,7 +11,6 @@ import "bot-go/src"
 type Command = src.Command
 type ContextBot = src.ContextBot
 type Middleware = src.Middleware
-type ConversationMemory = src.ConversationMemory
 type HookType = src.HookType
 
 // ==========================================
@@ -23,7 +22,6 @@ var RateLimitMiddleware = src.RateLimitMiddleware
 var OwnerOnlyMiddleware = src.OwnerOnlyMiddleware
 var PremiumOnlyMiddleware = src.PremiumOnlyMiddleware
 var GroupOnlyMiddleware = src.GroupOnlyMiddleware
-var GetMemory = src.GetMemory
 var CommandRegistry = src.CommandRegistry
 
 // AndroidExtra → SendRequestExtra ber-ID custom android (untuk semua SendMessage).

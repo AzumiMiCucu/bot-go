@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,8 +19,9 @@ import (
 
 // =================================================================
 // PLAY MUSIC dari YouTube Music (API ps.azumi.dev)
-//   play <judul>        → langsung kirim hasil terbaik
-//   play <judul> --all  → tampilkan daftar lagu, user reply nomor
+//   play <judul>         → langsung kirim hasil terbaik
+//   play <judul> --all   → tampilkan daftar lagu, user reply nomor
+//   play <judul> --call  → telepon pengirim & putar lagu acak saat tersambung
 // =================================================================
 
 func init() {
@@ -27,7 +30,7 @@ func init() {
 		Category:    "General",
 		Aliases:     []string{"play", "ytmusic"},
 		Pattern:     regexp.MustCompile(`(?i)^(?:play|ytmusic)\s+(.+)`),
-		Description: "Putar lagu YouTube Music (tambah --all untuk pilih dari daftar)",
+		Description: "Putar lagu YouTube Music (--all pilih dari daftar, --call telepon pengirim)",
 		Execute:     ExecutePlay,
 	})
 }
@@ -93,6 +96,14 @@ func ExecutePlay(ctx *ContextBot) error {
 		showAll = true
 		raw = strings.TrimSpace(regexp.MustCompile(`(?i)\s*--all\s*`).ReplaceAllString(raw, " "))
 	}
+
+	// Deteksi flag --call
+	wantCall := false
+	if regexp.MustCompile(`(?i)(^|\s)--call(\s|$)`).MatchString(raw) {
+		wantCall = true
+		raw = strings.TrimSpace(regexp.MustCompile(`(?i)\s*--call\s*`).ReplaceAllString(raw, " "))
+	}
+
 	query := strings.TrimSpace(raw)
 	if query == "" {
 		return ctx.Reply("🎵 Sebutkan judul lagunya. Contoh: `play trouble --all`")
@@ -103,6 +114,11 @@ func ExecutePlay(ctx *ContextBot) error {
 	songs, err := searchSongs(query)
 	if err != nil || len(songs) == 0 {
 		return ctx.Reply(fmt.Sprintf("😢 Lagu *%s* tidak ditemukan.", query))
+	}
+
+	if wantCall {
+		// Mode --call: telepon pengirim & putar lagu ACAK (bukan hasil teratas).
+		return playCall(ctx, pickRandomSong(songs))
 	}
 
 	if showAll {
@@ -118,6 +134,22 @@ func ExecutePlay(ctx *ContextBot) error {
 		}
 	}
 	return playSong(ctx, best, false) // tanpa --all → metadata teks biasa
+}
+
+// pickRandomSong memilih satu lagu acak dari hasil pencarian, mengutamakan
+// entri bertipe SONG (mengabaikan VIDEO/PODCAST dsb). Bila tak ada yang
+// bertipe SONG, ambil acak dari seluruh hasil.
+func pickRandomSong(songs []ytSong) ytSong {
+	var onlySongs []ytSong
+	for _, s := range songs {
+		if strings.EqualFold(s.Type, "SONG") {
+			onlySongs = append(onlySongs, s)
+		}
+	}
+	if len(onlySongs) > 0 {
+		return onlySongs[rand.IntN(len(onlySongs))]
+	}
+	return songs[rand.IntN(len(songs))]
 }
 
 // searchSongs memanggil API dan mengembalikan daftar lagu (maks 10).
@@ -243,6 +275,101 @@ func playSong(ctx *ContextBot, song ytSong, useCard bool) error {
 	}
 	_ = ctx.React("✅")
 	return nil
+}
+
+// playCall mengunduh lagu ke file sementara lalu menelepon PENGIRIM pesan dan
+// memutar lagu itu begitu panggilan tersambung (memanfaatkan src.StartCall).
+// File audio sementara dihapus otomatis ketika panggilan berakhir.
+func playCall(ctx *ContextBot, song ytSong) error {
+	if src.CallClient == nil {
+		return ctx.Reply("⚠️ Subsistem panggilan belum aktif, tidak bisa `--call`.")
+	}
+
+	// Target = pengirim perintah (bukan grup; panggilan WA bersifat 1:1).
+	target := ctx.SenderJID.String()
+	if target == "" {
+		return ctx.Reply("⚠️ Tidak bisa menentukan nomor pengirim untuk ditelepon.")
+	}
+
+	_ = ctx.React("⏳")
+
+	// Ambil tautan & unduh audio.
+	mp3Res, err := src.YtMp3(song.URL)
+	if err != nil {
+		return ctx.Reply("❌ Gagal mengambil audio lagu ini.")
+	}
+	var mp3 ytMp3Res
+	if b, e := json.Marshal(mp3Res.Data); e == nil {
+		json.Unmarshal(b, &mp3)
+	}
+	if !mp3.Success || mp3.Result.DownloadURL == "" {
+		return ctx.Reply("❌ Tautan audio tidak tersedia untuk lagu ini.")
+	}
+
+	data, _, err := src.DownloadBytes(mp3.Result.DownloadURL)
+	if err != nil || len(data) == 0 {
+		return ctx.Reply("❌ Gagal mengunduh audio.")
+	}
+
+	// Tulis ke file sementara karena StartCall memutar audio dari PATH file.
+	tmp, err := os.CreateTemp("", "playcall-*.mp3")
+	if err != nil {
+		return ctx.Reply("❌ Gagal menyiapkan file audio sementara.")
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return ctx.Reply("❌ Gagal menulis file audio sementara.")
+	}
+	tmp.Close()
+
+	title := mp3.Result.Title
+	if title == "" {
+		title = song.Name
+	}
+
+	// notify melaporkan progres panggilan ke chat & membersihkan file saat selesai.
+	chatJID := ctx.ChatJID
+	client := ctx.Client
+	notify := func(label string) {
+		var text string
+		switch {
+		case label == "ringing":
+			text = "📲 Berdering..."
+		case label == "active":
+			text = "🟢 Tersambung! Memutar lagu..."
+		case strings.HasPrefix(label, "ended"):
+			os.Remove(tmpPath) // panggilan berakhir → hapus file sementara
+			reason := strings.TrimPrefix(label, "ended:")
+			if reason == "" || reason == "ended" {
+				text = "🔴 Panggilan berakhir."
+			} else {
+				text = "🔴 Panggilan berakhir (" + reason + ")."
+			}
+		default:
+			return // fase calling/connecting tak perlu dilaporkan
+		}
+		_, _ = client.SendMessage(context.Background(), chatJID, &waProto.Message{
+			Conversation: proto.String(text),
+		}, src.AndroidExtra())
+	}
+
+	callID, peer, err := src.StartCall(ctx.Ctx, target, tmpPath, notify)
+	if err != nil {
+		os.Remove(tmpPath)
+		_ = ctx.React("❌")
+		return ctx.Reply("❌ Gagal menelepon: " + err.Error())
+	}
+
+	_ = ctx.React("📞")
+	msg := fmt.Sprintf("☎️ *Memanggil & memutar lagu...*\n👤 %s\n🎶 %s — %s",
+		peer, title, song.Artist.Name)
+	if song.Duration > 0 {
+		msg += fmt.Sprintf("\n⏱️ %s", fmtDuration(song.Duration))
+	}
+	msg += fmt.Sprintf("\n🆔 %s", callID)
+	return ctx.Reply(msg)
 }
 
 // sendAudio mengunggah & mengirim audio playable (bukan voice note).

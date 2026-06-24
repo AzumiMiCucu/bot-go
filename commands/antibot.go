@@ -17,11 +17,19 @@ import (
 )
 
 // =================================================================
-// ANTI-BOT CERDAS — deteksi berbasis SKOR (gabungan sinyal):
-//   1) ID khas Baileys (3EB0/BAE5)               → +3  (HINT, tak final)
+// ANTI-BOT CERDAS — GATE device-index lalu SKOR perilaku:
+//
+// LANGKAH 1 — primary vs secondary (device-index JID, BUKAN pn/lid):
+//   • device 0 (HP UTAMA)  → langsung PASS manusia, cache 1 jam, dicek ulang
+//                            setelahnya. Baileys/whatsmeow TAK BISA jadi device 0.
+//   • device != 0 (COMPANION: WA Web/Desktop/bot) → lanjut cek perilaku ↓
+//
+// LANGKAH 2 — skor perilaku (hanya untuk companion):
+//   1) ID khas Baileys / verdict bot definitif   → langsung tembus ambang
 //   2) Flood (banyak pesan dalam waktu singkat)  → +4
 //   3) Teks SAMA berulang (>=3x)                 → +4
 //   4) Kirim TANPA "mengetik" (presence aktif)   → +4
+//   5) Spam command berawalan prefix bot         → +4
 // Skor >= antibotThreshold → CAPTCHA.
 //
 // REALITA (jujur): bot yang pakai ID normal + MEMALSUKAN "mengetik" + tidak
@@ -44,14 +52,19 @@ const (
 	floodMax         = 6 // >= 6 pesan dalam floodWindow = flood
 	adminCacheTL     = 5 * time.Minute
 	typingTTL        = 1 * time.Hour // "terbukti manusia" hanya berlaku 1 jam sejak ketikan terakhir
+	humanTTL         = 1 * time.Hour // HP utama (device 0) = manusia, berlaku 1 jam lalu dicek ulang
 
-	scoreUnknownID = 4 // ID device tak dikenal (bukan ios/web/android/desktop) → sinyal KUAT
+	scoreUnknownID = 4 // verdict suspect (mis. ID device tak dikenal, metadata tak lengkap)
 	scoreFlood     = 4 // banyak pesan dalam waktu singkat
 	scoreRepeat    = 4 // teks SAMA dikirim berulang (>=repeatMax)
 	scoreNoTyped   = 4 // kirim TANPA "mengetik" (presence aktif) — pembeda utama bot sederhana
 
 	repeatWindow = 60 * time.Second
 	repeatMax    = 3 // teks sama >=3x dalam repeatWindow = berulang
+
+	scorePrefix  = 4 // spam command berawalan prefix bot (.menu #owner /start) berulang
+	prefixWindow = 60 * time.Second
+	prefixMax    = 3 // >=3 pesan command-prefix dalam prefixWindow = spam command
 )
 
 // ---- State in-memory ----
@@ -73,6 +86,10 @@ var (
 	repeatStore = make(map[string]*repeatRec)
 	repeatMu    sync.Mutex
 
+	// Pelacak pesan berawalan prefix-command (.menu/#owner/dst) per pengirim.
+	prefixStore = make(map[string][]time.Time)
+	prefixMu    sync.Mutex
+
 	adminCache   = make(map[string]adminCacheEntry)
 	adminCacheMu sync.Mutex
 
@@ -80,11 +97,18 @@ var (
 	typingStore  = make(map[string]time.Time)
 	typingMu     sync.Mutex
 	presenceSeen int32 // 0/1 — apakah event presence pernah diterima sama sekali
+
+	// Cache "terbukti manusia" untuk HP utama (device-index 0). Sekali pesan datang
+	// dari device 0, pengirim di-pass sebagai manusia & disimpan humanTTL (1 jam);
+	// dalam jendela itu pesannya tak discan lagi. Setelah 1 jam → dicek ulang.
+	humanStore = make(map[string]time.Time)
+	humanMu    sync.Mutex
 )
 
 type adminCacheEntry struct {
-	users map[string]bool
-	exp   time.Time
+	users    map[string]bool
+	botAdmin bool // apakah BOT sendiri admin di grup ini
+	exp      time.Time
 }
 
 func init() {
@@ -92,8 +116,8 @@ func init() {
 		Name:        "Anti-Bot",
 		Category:    "Group",
 		Aliases:     []string{"antibot"},
-		Pattern:     regexp.MustCompile(`(?i)^\s*antibot\s+(on|off)\s*$`),
-		Description: "Aktifkan/matikan proteksi anti-bot grup (admin)",
+		Pattern:     regexp.MustCompile(`(?i)^\s*antibot(?:\s+(.+))?\s*$`),
+		Description: "Proteksi anti-bot grup: on/off/status/help (admin)",
 		Execute:     ExecuteAntibotToggle,
 	}).Use(GroupOnlyMiddleware)
 }
@@ -124,6 +148,23 @@ func typedLately(groupID, user string) bool {
 }
 
 func presenceActive() bool { return atomic.LoadInt32(&presenceSeen) == 1 }
+
+// markProvenHuman menandai pengirim "terbukti manusia" (datang dari HP utama,
+// device 0) selama humanTTL. Refresh tiap pesan device-0 berikutnya.
+func markProvenHuman(key string) {
+	humanMu.Lock()
+	humanStore[key] = time.Now()
+	humanMu.Unlock()
+}
+
+// provenHumanLately: apakah pengirim ini sudah terbukti manusia dalam humanTTL
+// (1 jam) terakhir. Bila ya → antibot melewatinya tanpa scan ulang.
+func provenHumanLately(key string) bool {
+	humanMu.Lock()
+	t, ok := humanStore[key]
+	humanMu.Unlock()
+	return ok && time.Since(t) < humanTTL
+}
 
 // isMediaMsg true bila pesan berupa media (foto/video/dokumen/audio/stiker).
 func isMediaMsg(m *waProto.Message) bool {
@@ -166,15 +207,18 @@ func HandleAntibot(ctx *ContextBot) bool {
 		return false
 	}
 
+	// Antibot hanya berguna bila BOT admin (kalau tidak, captcha & kick mustahil).
+	// Bot bukan admin → diam total: tidak scan, tidak kirim apa pun.
+	if !botIsGroupAdmin(ctx, groupID) {
+		return false
+	}
+
 	su := ctx.SenderJID.ToNonAD().User
 	sl := ctx.SenderAlt.ToNonAD().User
 	key := groupID + "|" + su + "|" + sl
 
 	// Trusted / admin → lewati
-	if (su != "" && src.DB.IsTrusted(groupID, su)) || (sl != "" && src.DB.IsTrusted(groupID, sl)) {
-		return false
-	}
-	if isCachedAdmin(ctx, groupID) {
+	if groupModExempt(ctx, groupID) {
 		return false
 	}
 
@@ -204,14 +248,55 @@ func HandleAntibot(ctx *ContextBot) bool {
 		return true
 	}
 
-	// === Hitung skor ===
+	// === Manusia terbukti (HP utama) dalam 1 jam terakhir → lewati tanpa scan ===
+	if provenHumanLately(key) {
+		return false
+	}
+
+	// Voice note / audio = bukti POSITIF manusia (bot hampir tak pernah kirim VN).
+	// Diperlakukan seperti "mengetik": menandai user kebal sinyal typing (1 jam).
+	// Catatan: "tak pernah VN" TIDAK dipakai sebagai tuduhan tunggal (terlalu lemah);
+	// VN hanya dipakai satu arah sebagai bukti manusia.
+	if ctx.Msg.Message.GetAudioMessage() != nil {
+		RecordTyping(ctx.ChatJID, ctx.SenderJID)
+	}
+
+	// === Analisis komprehensif pesan (ID, raw metadata, device-index, bot signals) ===
+	det := src.DetectBot(ctx.Msg)
+
+	// === GATE PRIMARY / SECONDARY (device-index JID) ===
+	// HP UTAMA (device 0): registrasi nomor langsung — Baileys/whatsmeow TAK BISA
+	// jadi device 0 (mereka pairing sebagai companion). Jadi pesan device-0 = manusia:
+	// langsung pass, simpan "terbukti manusia" 1 jam, dicek ulang setelahnya.
+	// Pengecualian: marker bot DEFINITIF (server/akun bot WA resmi) tetap menang.
+	if det.IsPrimary && det.Verdict != src.VerdictBot {
+		markProvenHuman(key)
+		fmt.Printf("[ANTIBOT] grup=%s pengirim=%s device=0(primary) → PASS manusia (cache 1 jam)\n", groupID, su)
+		return false
+	}
+
+	// COMPANION (device != 0 — WA Web/Desktop/bot): jalankan cek perilaku di bawah.
+	// Manusia di WA Web/Desktop akan lolos (mengetik, tak flood, tak spam command);
+	// hanya bot companion (tak mengetik / flood / spam / ID Baileys) yang tembus ambang.
+
 	score := 0
 	var reasons []string
-	dev := src.ClassifyDeviceFromID(string(ctx.Msg.Info.ID))
-	if dev == "unknown" {
+	dev := det.DeviceClass
+
+	// --- Verdict deteksi (satu sumber kebenaran, berpusat DeviceListMetadata) ---
+	// Bot/Baileys definitif → langsung tembus ambang (tak perlu sinyal perilaku).
+	// Suspect → skor sedang, butuh sinyal perilaku untuk tembus.
+	// Human/Unknown → TIDAK dihukum sinyal device; hanya flood/repeat murni berlaku
+	// (mencegah false-positive HP asli yang ber-addressing lid).
+	switch det.Verdict {
+	case src.VerdictBot, src.VerdictBaileys:
+		score += antibotThreshold // langsung lewat ambang
+		reasons = append(reasons, det.VerdictReason)
+	case src.VerdictSuspect:
 		score += scoreUnknownID
-		reasons = append(reasons, "ID device tak dikenal")
+		reasons = append(reasons, det.VerdictReason)
 	}
+
 	if isFlooding(key) {
 		score += scoreFlood
 		reasons = append(reasons, "flood")
@@ -235,10 +320,19 @@ func HandleAntibot(ctx *ContextBot) bool {
 		score += scoreNoTyped
 		reasons = append(reasons, "tak mengetik (>1 jam)")
 	}
+	// Spam command bot: pesan berawalan prefix command (.menu/#owner/dst) BERULANG
+	// (>=prefixMax dalam prefixWindow). Menangkap bot yang membombardir command
+	// BERAGAM — luput dari isRepeating yang hanya cek teks IDENTIK. Satu panggilan
+	// .menu manusia biasa tak cukup (butuh pengulangan) → false-positive minim.
+	if isBotCommandPrefix(ctx.TextMessage) && isPrefixSpamming(key) {
+		score += scorePrefix
+		reasons = append(reasons, "spam command bot")
+	}
 
-	// DEBUG: tampilkan ID & skor tiap pesan di grup ber-antibot (untuk tuning).
-	fmt.Printf("[ANTIBOT] grup=%s pengirim=%s id=%q device=%s skor=%d/%d alasan=%v presence=%v\n",
-		groupID, su, string(ctx.Msg.Info.ID), dev, score, antibotThreshold, reasons, presenceActive())
+	// DEBUG: tampilkan verdict & skor tiap pesan di grup ber-antibot (untuk tuning).
+	fmt.Printf("[ANTIBOT] grup=%s pengirim=%s id=%q dev=%s deviceIdx=%d(companion) verdict=%s(baileysScore=%d) skor=%d/%d alasan=%v presence=%v\n",
+		groupID, su, string(ctx.Msg.Info.ID), dev, det.DeviceID, det.Verdict, det.BaileysScore,
+		score, antibotThreshold, reasons, presenceActive())
 
 	if score < antibotThreshold {
 		return false
@@ -329,6 +423,35 @@ func isRepeating(key, text string) bool {
 	return r.count >= repeatMax
 }
 
+// reBotCommandPrefix: pesan yang DIMULAI prefix command umum bot (. ! # /) diikuti
+// huruf/digit — mis. ".menu", "#owner", "/start", "!ping". Punctuation murni
+// ("...", "!!!") TIDAK cocok.
+var reBotCommandPrefix = regexp.MustCompile(`^[.!#/][a-zA-Z0-9]`)
+
+// isBotCommandPrefix true bila teks tampak seperti pemanggilan command bot.
+func isBotCommandPrefix(text string) bool {
+	return reBotCommandPrefix.MatchString(strings.TrimSpace(text))
+}
+
+// isPrefixSpamming mencatat satu pesan command-prefix dari pengirim & true bila
+// jumlahnya >=prefixMax dalam prefixWindow. Hanya panggil untuk pesan yang memang
+// command-prefix (lihat pemanggil yang men-gate dengan isBotCommandPrefix).
+func isPrefixSpamming(key string) bool {
+	now := time.Now()
+	prefixMu.Lock()
+	defer prefixMu.Unlock()
+
+	var recent []time.Time
+	for _, t := range prefixStore[key] {
+		if now.Sub(t) < prefixWindow {
+			recent = append(recent, t)
+		}
+	}
+	recent = append(recent, now)
+	prefixStore[key] = recent
+	return len(recent) >= prefixMax
+}
+
 func isFlooding(key string) bool {
 	now := time.Now()
 	floodMu.Lock()
@@ -345,33 +468,78 @@ func isFlooding(key string) bool {
 	return len(recent) >= floodMax
 }
 
-func isCachedAdmin(ctx *ContextBot, groupID string) bool {
+// loadGroupAdmins mengambil (dari cache, atau refresh GetGroupInfo) daftar admin
+// grup + apakah BOT sendiri admin. Satu pengambilan dipakai bersama oleh
+// isCachedAdmin (cek pengirim) dan botIsGroupAdmin (cek bot).
+func loadGroupAdmins(ctx *ContextBot, groupID string) adminCacheEntry {
 	adminCacheMu.Lock()
 	e, ok := adminCache[groupID]
 	adminCacheMu.Unlock()
-
-	if !ok || time.Now().After(e.exp) {
-		e = adminCacheEntry{users: make(map[string]bool), exp: time.Now().Add(adminCacheTL)}
-		if info, err := ctx.Client.GetGroupInfo(context.Background(), ctx.ChatJID); err == nil {
-			for _, p := range info.Participants {
-				if p.IsAdmin || p.IsSuperAdmin {
-					if u := p.JID.ToNonAD().User; u != "" {
-						e.users[u] = true
-					}
-					if u := p.LID.ToNonAD().User; u != "" {
-						e.users[u] = true
-					}
-				}
-			}
-		}
-		adminCacheMu.Lock()
-		adminCache[groupID] = e
-		adminCacheMu.Unlock()
+	if ok && time.Now().Before(e.exp) {
+		return e
 	}
 
+	e = adminCacheEntry{users: make(map[string]bool), exp: time.Now().Add(adminCacheTL)}
+
+	// JID bot sendiri (phone + lid) untuk menentukan status admin bot.
+	var botUser, botLID string
+	if ctx.Client.Store != nil {
+		if ctx.Client.Store.ID != nil {
+			botUser = ctx.Client.Store.ID.ToNonAD().User
+		}
+		if lid := ctx.Client.Store.GetLID(); !lid.IsEmpty() {
+			botLID = lid.ToNonAD().User
+		}
+	}
+
+	if info, err := ctx.Client.GetGroupInfo(context.Background(), ctx.ChatJID); err == nil {
+		for _, p := range info.Participants {
+			if !(p.IsAdmin || p.IsSuperAdmin) {
+				continue
+			}
+			pu := p.JID.ToNonAD().User
+			pl := p.LID.ToNonAD().User
+			if pu != "" {
+				e.users[pu] = true
+			}
+			if pl != "" {
+				e.users[pl] = true
+			}
+			if (botUser != "" && (pu == botUser || pl == botUser)) ||
+				(botLID != "" && (pu == botLID || pl == botLID)) {
+				e.botAdmin = true
+			}
+		}
+	}
+
+	adminCacheMu.Lock()
+	adminCache[groupID] = e
+	adminCacheMu.Unlock()
+	return e
+}
+
+// groupModExempt: user kebal moderasi (antibot/antilink) bila trusted ATAU admin
+// grup. Satu sumber kebenaran pengecualian — dipakai bersama oleh kedua handler.
+func groupModExempt(ctx *ContextBot, groupID string) bool {
+	su := ctx.SenderJID.ToNonAD().User
+	sl := ctx.SenderAlt.ToNonAD().User
+	if (su != "" && src.DB.IsTrusted(groupID, su)) || (sl != "" && src.DB.IsTrusted(groupID, sl)) {
+		return true
+	}
+	return isCachedAdmin(ctx, groupID)
+}
+
+func isCachedAdmin(ctx *ContextBot, groupID string) bool {
+	e := loadGroupAdmins(ctx, groupID)
 	su := ctx.SenderJID.ToNonAD().User
 	sl := ctx.SenderAlt.ToNonAD().User
 	return (su != "" && e.users[su]) || (sl != "" && e.users[sl])
+}
+
+// botIsGroupAdmin: apakah bot sendiri admin di grup ini. Antibot hanya berguna
+// bila bot admin (kalau tidak, captcha/kick mustahil dijalankan).
+func botIsGroupAdmin(ctx *ContextBot, groupID string) bool {
+	return loadGroupAdmins(ctx, groupID).botAdmin
 }
 
 // ====================== COMMAND: TOGGLE ======================
@@ -381,10 +549,43 @@ func ExecuteAntibotToggle(ctx *ContextBot) error {
 		return ctx.Reply("⛔ Hanya admin yang bisa mengatur anti-bot.")
 	}
 	groupID := ctx.ChatJID.ToNonAD().String()
-	on := strings.Contains(strings.ToLower(ctx.TextMessage), "on")
-	src.DB.SetGroupAntibot(groupID, on)
-	if on {
+	sub := strings.ToLower(strings.TrimSpace(ctx.Args))
+
+	switch sub {
+	case "on":
+		src.DB.SetGroupAntibot(groupID, true)
 		return ctx.Reply("🛡️ *Anti-Bot AKTIF*.")
+	case "off":
+		src.DB.SetGroupAntibot(groupID, false)
+		return ctx.Reply("🛡️ *Anti-Bot NONAKTIF*.")
+	case "status", "show":
+		return antibotStatus(ctx, groupID)
+	default:
+		return ctx.Reply(antibotHelp())
 	}
-	return ctx.Reply("🛡️ *Anti-Bot NONAKTIF*.")
+}
+
+func antibotStatus(ctx *ContextBot, groupID string) error {
+	status := "❌ OFF"
+	if src.DB.IsGroupAntibot(groupID) {
+		status = "✅ ON"
+	}
+	botAdmin := "❌ bukan admin (antibot tak jalan)"
+	if botIsGroupAdmin(ctx, groupID) {
+		botAdmin = "✅ admin"
+	}
+	trusted := len(src.DB.GetTrustList(groupID))
+	return ctx.Reply(fmt.Sprintf(
+		"🛡️ *Anti-Bot*\n\nStatus  : %s\nBot     : %s\nTrusted : %d user\n\n_Bantuan: `antibot help`._",
+		status, botAdmin, trusted))
+}
+
+func antibotHelp() string {
+	return "📖 *Anti-Bot*\n\n" +
+		"`antibot on` / `antibot off`\n" +
+		"`antibot status` — status & info grup\n\n" +
+		"_Cara kerja:_ pesan mencurigakan (bot/Baileys, flood, teks berulang, " +
+		"tak pernah mengetik, spam command) diberi skor. Lewat ambang → *CAPTCHA*: " +
+		"jawab benar = jadi *trusted*, salah/diam = dikeluarkan.\n" +
+		"_Syarat:_ bot harus *admin* grup."
 }

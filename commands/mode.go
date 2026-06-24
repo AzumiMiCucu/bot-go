@@ -17,8 +17,8 @@ func init() {
 		Name:        "Mode Self/Public",
 		Category:    "Owner",
 		Aliases:     []string{"self", "public"},
-		Pattern:     regexp.MustCompile(`(?i)^\s*(self|public)\s*$`),
-		Description: "Atur mode grup INI: public (semua) / self (hanya owner)",
+		Pattern:     regexp.MustCompile(`(?i)^\s*(self|public)(?:\s+(help|status|show))?\s*$`),
+		Description: "Atur mode grup INI: public (semua) / self (hanya owner) · help/status",
 		Execute:     ExecuteBotMode,
 	}).Use(OwnerOnlyMiddleware).Use(GroupOnlyMiddleware)
 
@@ -43,9 +43,26 @@ func init() {
 
 func ExecuteBotMode(ctx *ContextBot) error {
 	groupID := ctx.ChatJID.ToNonAD().String()
-	choice := strings.ToLower(strings.TrimSpace(ctx.TextMessage))
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(ctx.TextMessage)))
+	mode, arg := "", ""
+	if len(fields) > 0 {
+		mode = fields[0]
+	}
+	if len(fields) > 1 {
+		arg = fields[1]
+	}
 
-	if strings.HasPrefix(choice, "self") {
+	// self/public help|status → tampilkan mode saat ini, jangan men-toggle.
+	if arg == "help" || arg == "status" || arg == "show" {
+		cur := "🌐 PUBLIC (semua member dilayani)"
+		if src.DB.IsGroupSelf(groupID) {
+			cur = "🔒 SELF (hanya owner dilayani)"
+		}
+		return ctx.Reply(fmt.Sprintf(
+			"⚙️ *Mode Grup*\n\nStatus : %s\n\n`self`   → hanya owner\n`public` → semua member\n\n_Anti-bot & antilink tetap jalan di mode self._", cur))
+	}
+
+	if mode == "self" {
 		src.DB.SetGroupSelf(groupID, true)
 		return ctx.Reply("🔒 Grup ini → mode *SELF*. Hanya owner yang dilayani di sini.")
 	}

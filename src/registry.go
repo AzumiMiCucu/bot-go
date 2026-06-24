@@ -47,7 +47,6 @@ type ContextBot struct {
 	UserBalance   float64
 	IsOwner       bool
 	IsGroup bool
-	Memory        *ConversationMemory
 	AddBalance    func(float64) float64
 	DeductBalance func(float64) (bool, float64)
 	Reply         func(string) error
@@ -56,21 +55,6 @@ type ContextBot struct {
 	Print          func(data ...interface{})
 	Ctx           context.Context
 	Button        func() *ButtonBuilder
-}
-
-type ConversationMemory struct {
-	UserID       string
-	Messages     []MemoryMessage
-	Context      map[string]interface{}
-	LastActivity time.Time
-	mu           sync.RWMutex
-}
-
-type MemoryMessage struct {
-	Timestamp time.Time              `json:"timestamp"`
-	Sender    string                 `json:"sender"`
-	Content   string                 `json:"content"`
-	Metadata  map[string]interface{} `json:"metadata"`
 }
 
 type HookType string
@@ -98,9 +82,6 @@ var (
 	exactAliasMap   = make(map[string]*Command) // alias lower → command (exact match O(1))
 	patternCommands []*Command                  // hanya command yang punya Pattern (regex)
 	prefixEntries   []prefixEntry               // alias non-pattern (untuk prefix match, urut registrasi)
-
-	conversationMemory = make(map[string]*ConversationMemory)
-	memoryMutex        sync.RWMutex
 
 	hooks              = make(map[HookType][]Hook)
 	hooksMutex         sync.RWMutex
@@ -134,23 +115,6 @@ func rebuildIndex() {
 			}
 		}
 	}
-}
-
-func init() {
-	// Auto cleanup memori chat tiap 15 menit
-	go func() {
-		ticker := time.NewTicker(15 * time.Minute)
-		for range ticker.C {
-			memoryMutex.Lock()
-			now := time.Now()
-			for k, v := range conversationMemory {
-				if now.Sub(v.LastActivity) > 30*time.Minute {
-					delete(conversationMemory, k)
-				}
-			}
-			memoryMutex.Unlock()
-		}
-	}()
 }
 
 // ==========================================
@@ -301,59 +265,7 @@ func GroupOnlyMiddleware(ctx *ContextBot) error {
 }
 
 // ==========================================
-// 5. MEMORY CHAT / CONTEXT
-// ==========================================
-
-func GetMemory(userID string) *ConversationMemory {
-	memoryMutex.Lock()
-	defer memoryMutex.Unlock()
-
-	if mem, exists := conversationMemory[userID]; exists {
-		mem.LastActivity = time.Now()
-		return mem
-	}
-
-	mem := &ConversationMemory{
-		UserID:       userID,
-		Messages:     make([]MemoryMessage, 0),
-		Context:      make(map[string]interface{}),
-		LastActivity: time.Now(),
-	}
-
-	conversationMemory[userID] = mem
-	return mem
-}
-
-func (cm *ConversationMemory) AddMessage(sender, content string, metadata map[string]interface{}) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	cm.LastActivity = time.Now()
-	cm.Messages = append(cm.Messages, MemoryMessage{
-		Timestamp: time.Now(),
-		Sender:    sender,
-		Content:   content,
-		Metadata:  metadata,
-	})
-
-	if len(cm.Messages) > 15 {
-		cm.Messages = cm.Messages[len(cm.Messages)-15:]
-	}
-}
-
-func (cm *ConversationMemory) GetChatHistory() string {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-
-	history := ""
-	for _, msg := range cm.Messages {
-		history += msg.Sender + ": " + msg.Content + "\n"
-	}
-	return history
-}
-
-// ==========================================
-// 6. HOOKS (EVENT LISTENERS)
+// 5. HOOKS (EVENT LISTENERS)
 // ==========================================
 
 func RegisterHook(hookType HookType, callback func(*ContextBot, *Command, error) error) {

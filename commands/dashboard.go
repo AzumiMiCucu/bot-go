@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"bot-go/src"
-
 )
 
 func init() {
@@ -30,6 +29,8 @@ func ExecuteDashboard(ctx *ContextBot) error {
 		return dashUsers(ctx)
 	case "full", "all", "f":
 		return dashFull(ctx)
+	case "pesan", "msg", "message", "bot", "deteksi":
+		return dashMessages(ctx)
 	default:
 		return dashMain(ctx)
 	}
@@ -144,7 +145,7 @@ func dashMain(ctx *ContextBot) error {
 			"🏆 *Top 5 Command*\n"+
 			"%s\n"+
 			"📌 Sub-command:\n"+
-			"  `stats total` · `stats user` · `stats full`",
+			"  `stats total` · `stats user` · `stats full` · `stats pesan`",
 		time.Now().Format("02 Jan 2006 · 15:04 WIB"),
 		systemStats["totalUsers"],
 		systemStats["totalBalance"],
@@ -215,12 +216,99 @@ func dashUsers(ctx *ContextBot) error {
 
 		// Ambil nomornya saja (hilangkan @s.whatsapp.net)
 		displayID := strings.Split(userID, "@")[0]
-		
+
 		// Sensor sedikit nomor HP untuk privasi jika diperlukan (opsional, saat ini tampil penuh)
 		sb.WriteString(fmt.Sprintf("%s *%s*\n  └─ %s %d cmd\n", medalIcon(i), displayID, bar(count, maxMsg, 8), count))
 	}
 
 	return ctx.Reply(sb.String())
+}
+
+// =============================================
+// STATISTIK PESAN (akumulatif permanen dari msg.db)
+// =============================================
+
+func dashMessages(ctx *ContextBot) error {
+	c := src.AccumCounters()
+	total := c["total"]
+	if total == 0 {
+		return ctx.Reply("📭 Belum ada data pesan terekam. Statistik akan terisi seiring lalu lintas pesan masuk.")
+	}
+
+	media := c["media"]
+	pct := func(n int) int {
+		if total == 0 {
+			return 0
+		}
+		return n * 100 / total
+	}
+
+	var sb strings.Builder
+	sb.WriteString("💬 *STATISTIK PESAN*\n")
+	sb.WriteString("_akumulatif sepanjang masa_\n\n")
+
+	sb.WriteString(fmt.Sprintf("📨 Total Pesan : *%s*\n", formatRibuan(total)))
+	sb.WriteString(fmt.Sprintf("🖼️ Media       : *%s* (%d%%)\n", formatRibuan(media), pct(media)))
+	sb.WriteString(fmt.Sprintf("👥 Grup / Japri: *%s* / *%s*\n\n", formatRibuan(c["group"]), formatRibuan(c["private"])))
+
+	// Breakdown verdict
+	sb.WriteString("🔎 *Klasifikasi Pengirim*\n")
+	for _, v := range []struct{ key, icon, label string }{
+		{"verdict_human", "👤", "Manusia"},
+		{"verdict_bot", "🤖", "Bot"},
+		{"verdict_baileys", "🔴", "Baileys"},
+		{"verdict_suspect", "🟠", "Suspect"},
+		{"verdict_unknown", "⚪", "Unknown"},
+	} {
+		n := c[v.key]
+		if n == 0 {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("%s %-8s %s %d%%\n", v.icon, v.label, bar(n, total, 8), pct(n)))
+	}
+
+	// Distribusi device
+	sb.WriteString("\n📱 *Device*\n")
+	for _, d := range []struct{ key, label string }{
+		{"dev_android", "Android"}, {"dev_ios", "iOS"},
+		{"dev_web", "Web"}, {"dev_desktop", "Desktop"}, {"dev_unknown", "Unknown"},
+	} {
+		n := c[d.key]
+		if n == 0 {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("  %-8s : %s (%d%%)\n", d.label, formatRibuan(n), pct(n)))
+	}
+
+	// Top pengirim sepanjang masa
+	if top := src.TopSendersAllTime(5); len(top) > 0 {
+		sb.WriteString("\n🏆 *Top Pengirim*\n")
+		for i, s := range top {
+			sb.WriteString(fmt.Sprintf("%s %s — %s pesan\n", medalIcon(i), senderName(s), formatRibuan(s.Total)))
+		}
+	}
+
+	// Top pengirim bot
+	if bots := src.TopBotSendersAllTime(5); len(bots) > 0 {
+		sb.WriteString("\n🚨 *Top Pengirim Bot*\n")
+		for i, s := range bots {
+			sb.WriteString(fmt.Sprintf("%s %s — %s deteksi\n", medalIcon(i), senderName(s), formatRibuan(s.Bot)))
+		}
+	}
+
+	sb.WriteString(fmt.Sprintf("\n_Diperbarui %s_", time.Now().Format("02 Jan 15:04")))
+	return ctx.Reply(sb.String())
+}
+
+// senderName menampilkan nama pengirim (pushname bila ada, jika tidak nomornya).
+func senderName(s src.SenderStat) string {
+	if n := strings.TrimSpace(s.PushName); n != "" {
+		return n
+	}
+	if s.Sender == "" {
+		return "Unknown"
+	}
+	return strings.Split(s.Sender, "@")[0]
 }
 
 // =============================================

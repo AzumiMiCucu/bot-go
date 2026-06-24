@@ -1,6 +1,7 @@
 package src
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -307,4 +308,107 @@ func (db *Database) GetTrustList(groupID string) []string {
 		out = append(out, uid)
 	}
 	return out
+}
+
+// =================================================================
+// WELCOME / GOODBYE (sambutan & perpisahan grup)
+// =================================================================
+
+// GreetConfig: konfigurasi satu jenis sapaan (welcome / goodbye) per grup.
+type GreetConfig struct {
+	On        bool
+	Text      string
+	Type      string // text | image | video | sticker
+	MediaPath string // path file media (kosong bila type=text)
+}
+
+var (
+	// greetCache[kind][groupID] -> GreetConfig. kind = "welcome" / "goodbye".
+	greetCache   = map[string]map[string]GreetConfig{"welcome": {}, "goodbye": {}}
+	greetCacheMu sync.RWMutex
+	greetLoaded  bool
+)
+
+func (db *Database) loadGreetCache() {
+	greetCacheMu.Lock()
+	defer greetCacheMu.Unlock()
+	if greetLoaded {
+		return
+	}
+	rows, err := db.db.Query(`SELECT groupID,
+		COALESCE(welcome,0), COALESCE(welcomeText,''), COALESCE(welcomeType,'text'), COALESCE(welcomeMedia,''),
+		COALESCE(goodbye,0), COALESCE(goodbyeText,''), COALESCE(goodbyeType,'text'), COALESCE(goodbyeMedia,'')
+		FROM group_settings`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var gid string
+			var won, gon int
+			var wt, wty, wm, gt, gty, gm string
+			if rows.Scan(&gid, &won, &wt, &wty, &wm, &gon, &gt, &gty, &gm) == nil {
+				greetCache["welcome"][gid] = GreetConfig{On: won == 1, Text: wt, Type: wty, MediaPath: wm}
+				greetCache["goodbye"][gid] = GreetConfig{On: gon == 1, Text: gt, Type: gty, MediaPath: gm}
+			}
+		}
+	}
+	greetLoaded = true
+}
+
+func greetCols(kind string) (onCol, textCol, typeCol, mediaCol string) {
+	if kind == "goodbye" {
+		return "goodbye", "goodbyeText", "goodbyeType", "goodbyeMedia"
+	}
+	return "welcome", "welcomeText", "welcomeType", "welcomeMedia"
+}
+
+// GetGreet mengembalikan konfigurasi welcome/goodbye sebuah grup (dari cache).
+func (db *Database) GetGreet(groupID, kind string) GreetConfig {
+	db.loadGreetCache()
+	greetCacheMu.RLock()
+	defer greetCacheMu.RUnlock()
+	if m, ok := greetCache[kind]; ok {
+		return m[groupID]
+	}
+	return GreetConfig{}
+}
+
+func (db *Database) greetUpdate(groupID, kind, col string, val interface{}, apply func(*GreetConfig)) {
+	db.loadGreetCache()
+	q := fmt.Sprintf(`INSERT INTO group_settings (groupID, %s, updatedAt) VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(groupID) DO UPDATE SET %s=?, updatedAt=CURRENT_TIMESTAMP`, col, col)
+	db.db.Exec(q, groupID, val, val)
+
+	greetCacheMu.Lock()
+	cfg := greetCache[kind][groupID]
+	apply(&cfg)
+	greetCache[kind][groupID] = cfg
+	greetCacheMu.Unlock()
+}
+
+// SetGreetOn menyalakan/mematikan welcome/goodbye.
+func (db *Database) SetGreetOn(groupID, kind string, on bool) {
+	onCol, _, _, _ := greetCols(kind)
+	v := 0
+	if on {
+		v = 1
+	}
+	db.greetUpdate(groupID, kind, onCol, v, func(c *GreetConfig) { c.On = on })
+}
+
+// SetGreetText mengatur teks/caption sapaan.
+func (db *Database) SetGreetText(groupID, kind, text string) {
+	_, textCol, _, _ := greetCols(kind)
+	db.greetUpdate(groupID, kind, textCol, text, func(c *GreetConfig) { c.Text = text })
+}
+
+// SetGreetMedia mengatur jenis + path media sapaan (image/video/sticker).
+func (db *Database) SetGreetMedia(groupID, kind, mtype, path string) {
+	_, _, typeCol, mediaCol := greetCols(kind)
+	db.greetUpdate(groupID, kind, typeCol, mtype, func(c *GreetConfig) { c.Type = mtype })
+	db.greetUpdate(groupID, kind, mediaCol, path, func(c *GreetConfig) { c.MediaPath = path })
+}
+
+// ClearGreetMedia menghapus media → kembali ke jenis teks.
+func (db *Database) ClearGreetMedia(groupID, kind string) {
+	db.SetGreetMedia(groupID, kind, "text", "")
 }

@@ -8,6 +8,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
 type UserData struct {
 	ID           string    `db:"id" json:"id"`
 	Name         string    `db:"name" json:"name"`
@@ -43,7 +44,6 @@ type DailyStat struct {
 	Day     int
 	Message int
 }
-
 
 var DB *Database
 
@@ -187,6 +187,16 @@ func (db *Database) createTables() {
 	db.db.Exec("ALTER TABLE users ADD COLUMN lastDaily DATETIME")
 	db.db.Exec("ALTER TABLE group_settings ADD COLUMN antilink TEXT DEFAULT ''")
 	db.db.Exec("ALTER TABLE group_settings ADD COLUMN selfmode INTEGER DEFAULT 0")
+
+	// Welcome / Goodbye (sambutan & perpisahan grup)
+	db.db.Exec("ALTER TABLE group_settings ADD COLUMN welcome INTEGER DEFAULT 0")
+	db.db.Exec("ALTER TABLE group_settings ADD COLUMN welcomeText TEXT DEFAULT ''")
+	db.db.Exec("ALTER TABLE group_settings ADD COLUMN welcomeType TEXT DEFAULT 'text'")
+	db.db.Exec("ALTER TABLE group_settings ADD COLUMN welcomeMedia TEXT DEFAULT ''")
+	db.db.Exec("ALTER TABLE group_settings ADD COLUMN goodbye INTEGER DEFAULT 0")
+	db.db.Exec("ALTER TABLE group_settings ADD COLUMN goodbyeText TEXT DEFAULT ''")
+	db.db.Exec("ALTER TABLE group_settings ADD COLUMN goodbyeType TEXT DEFAULT 'text'")
+	db.db.Exec("ALTER TABLE group_settings ADD COLUMN goodbyeMedia TEXT DEFAULT ''")
 }
 
 // autoCleanupCache menghapus data user dari map memori jika tidak aktif > 1 jam
@@ -214,18 +224,19 @@ func (db *Database) autoCleanupCache() {
 // =============================================
 
 func (db *Database) AddOrUpdateUser(jid, name string) *UserData {
-	// 1. Fast path: cache hit (lock singkat)
-	db.mu.Lock()
+	// 1. Fast path: cache hit pakai RLock supaya jalur panas (tiap pesan) TIDAK
+	// menserialkan seluruh goroutine handler di satu write-lock global.
+	// messageCount & lastSeen dijadikan DB-authoritative (di-update async);
+	// nilai di memori menyusul saat cache di-reload (eviction 1 jam).
+	db.mu.RLock()
 	if cached, exists := db.cache[jid]; exists {
-		cached.Name = name
-		cached.LastSeen = time.Now()
-		cached.MessageCount++
-		// Asynchronous DB Update untuk respons bot instan
+		snap := *cached // salinan untuk caller → aman dari mutasi konkuren (balance/block)
+		db.mu.RUnlock()
+		// Update DB asinkron untuk respons bot instan.
 		go db.db.Exec("UPDATE users SET name=?, messageCount=messageCount+1, lastSeen=CURRENT_TIMESTAMP WHERE id=?", name, jid)
-		db.mu.Unlock()
-		return cached
+		return &snap
 	}
-	db.mu.Unlock()
+	db.mu.RUnlock()
 
 	// 2. Slow path: query DB TANPA memegang lock (mengurangi contention)
 	userData := &UserData{}
@@ -600,7 +611,7 @@ func (db *Database) GetTopGroupUsers(groupID string, limit int) []GroupUserStat 
 		LEFT JOIN users u ON g.userId = u.id
 		WHERE g.groupID = ? 
 		ORDER BY g.messageCount DESC LIMIT ?`, groupID, limit)
-	
+
 	if err != nil {
 		return nil
 	}
@@ -615,6 +626,7 @@ func (db *Database) GetTopGroupUsers(groupID string, limit int) []GroupUserStat 
 	}
 	return result
 }
+
 // Update AddGroupStat di src/database.go
 func (db *Database) AddGroupStat(groupID, userID string, isMedia bool, wordCount int) {
 	mediaInc := 0
@@ -654,7 +666,7 @@ func (db *Database) GetDailyGroupUsers(groupID string, date string, limit int) [
 		WHERE g.groupID = ? AND g.statDate = ?
 		GROUP BY g.userId
 		ORDER BY SUM(g.messageCount) DESC LIMIT ?`, groupID, date, limit)
-	
+
 	if err != nil {
 		return nil
 	}
@@ -678,13 +690,12 @@ func (db *Database) GetPeakHourGroup(groupID string, date string) (int, int) {
 		WHERE groupID = ? AND statDate = ?
 		GROUP BY statHour ORDER BY SUM(messageCount) DESC LIMIT 1
 	`, groupID, date).Scan(&peakHour, &totalMsg)
-	
+
 	if err != nil {
 		return -1, 0 // Jika tidak ada data
 	}
 	return peakHour, totalMsg
 }
-
 
 // GetHourlyGroupStats mengambil distribusi pesan per jam pada tanggal tertentu
 func (db *Database) GetHourlyGroupStats(groupID string, date string) []HourlyStat {
@@ -695,7 +706,7 @@ func (db *Database) GetHourlyGroupStats(groupID string, date string) []HourlySta
 		GROUP BY statHour 
 		ORDER BY statHour ASC
 	`, groupID, date)
-	
+
 	if err != nil {
 		return nil
 	}
@@ -710,6 +721,7 @@ func (db *Database) GetHourlyGroupStats(groupID string, date string) []HourlySta
 	}
 	return result
 }
+
 // GetMonthlyGroupStats mengambil akumulasi pesan per tanggal (1-31) pada bulan & tahun tertentu
 func (db *Database) GetMonthlyGroupStats(groupID string, month time.Month, year int) []DailyStat {
 	// Format filter string untuk SQLite (Contoh: "2026-05-%")
@@ -722,7 +734,7 @@ func (db *Database) GetMonthlyGroupStats(groupID string, month time.Month, year 
 		GROUP BY statDate
 		ORDER BY statDate ASC
 	`, groupID, datePrefix)
-	
+
 	if err != nil {
 		return nil
 	}
@@ -740,4 +752,3 @@ func (db *Database) GetMonthlyGroupStats(groupID string, month time.Month, year 
 func (db *Database) Close() error {
 	return db.db.Close()
 }
-

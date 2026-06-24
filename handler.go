@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 	"regexp"
+	"strings"
 
 	"bot-go/commands"
 	"bot-go/src"
@@ -100,16 +100,18 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		return
 	}
 
-	// =================================================================
-	// 1. ADVANCED INTERCEPTOR: MULTI-GROUP & ANTI-TIMPA PESAN
-	// =================================================================
-	if src.HandleMetaAIResponse(client, evt) {
-		return
-	}
-	// =================================================================
-
 	textMessage := src.ExtractTextMessage(evt.Message)
 	mediaType := hasMediaContent(evt.Message)
+
+	// Tangkap sinyal deteksi raw pesan ini (async, tidak menambah latensi respon).
+	// Dipakai cekbot saat seseorang me-reply pesan ini: metadata raw (MessageSecret,
+	// DeviceListMetadata, BotMetadata) hanya ada live, hilang di salinan quote.
+	// Sekaligus log ringkasan ke msg.db untuk histori/statistik (bounded & async).
+	go func() {
+		det := src.DetectBot(evt)
+		src.CaptureDetection(det)
+		src.StoreLiveMessage(det, evt.Info.Chat.ToNonAD().String(), textMessage, evt.Info.IsGroup, mediaType != "", evt.Info.Timestamp)
+	}()
 
 	src.Print("%s from %s", textMessage, evt.Info.Sender)
 	if debugLogMessages {
@@ -134,12 +136,6 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 
 	if textMessage == "" && mediaType == "" {
 		return
-	}
-
-	// Simpan pesan ke Memori Konteks
-	userMemory := commands.GetMemory(user)
-	if textMessage != "" {
-		userMemory.AddMessage(pushName, textMessage, map[string]interface{}{"isMedia": mediaType != ""})
 	}
 
 	// Ambil data user
@@ -194,7 +190,6 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		UserBalance: userData.Balance,
 		IsGroup:     evt.Info.IsGroup,
 		IsOwner:     isOwner,
-		Memory:      userMemory,
 		Ctx:         context.Background(),
 		AddBalance: func(amount float64) float64 {
 			return src.DB.AddBalance(dbUserID, amount)
@@ -247,42 +242,8 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		return
 	}
 
-	// FALLBACK (AUTO AI HANYA JIKA BOT DI-TAG / @-mention)
+	// Tidak ada command yang cocok → abaikan (tidak ada lagi fallback AI).
 	if matchedCommand == nil {
-		if evt.Info.IsGroup {
-			isMentioned := false
-			cleanPrompt := textMessage
-
-			botJID := client.Store.ID.ToNonAD().String()
-			botLID := client.Store.LID.ToNonAD().String()
-
-			if ctxInfo := evt.Message.GetExtendedTextMessage().GetContextInfo(); ctxInfo != nil {
-				for _, jid := range ctxInfo.GetMentionedJID() {
-					if jid == botJID || jid == botLID {
-						isMentioned = true
-					}
-					numberOnly := strings.Split(jid, "@")[0]
-					cleanPrompt = strings.ReplaceAll(cleanPrompt, "@"+numberOnly, "")
-				}
-			}
-
-			cleanPrompt = strings.Map(func(r rune) rune {
-				if r == '⁨' || r == '⁩' {
-					return -1
-				}
-				return r
-			}, cleanPrompt)
-			cleanPrompt = strings.TrimSpace(cleanPrompt)
-
-			if isMentioned && cleanPrompt != "" {
-				go func() {
-					src.EnqueueRequest(chatJID, evt)
-					if err := src.SendTextToMetaAI(client, cleanPrompt); err != nil {
-						fmt.Printf("⚠️ [META AI] %v\n", err)
-					}
-				}()
-			}
-		}
 		return
 	}
 
@@ -329,6 +290,5 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 			_ = commands.ExecuteHooks(commands.HookAfterExecute, ctxBot, matchedCommand, nil)
 		}
 	}()
-	
 
 }

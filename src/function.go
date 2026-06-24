@@ -108,11 +108,13 @@ func AndroidExtra() whatsmeow.SendRequestExtra {
 var (
     reDevIOS     = regexp.MustCompile(`^3A.{18}$`)       // iOS
     reDevWeb     = regexp.MustCompile(`^3E.{20}$`)       // WhatsApp Web
-    reDevAndroid = regexp.MustCompile(`^(.{21}|.{32})$`) // Android (incl. "AC"+30hex = 32 char)
+    reDevAndroid = regexp.MustCompile(`^(.{21}|.{32})$`) // Android ("AC"+30hex = 32 char = format ASLI WA Android)
     reDevDesktop = regexp.MustCompile(`^(3F|.{18}$)`)    // Desktop
 )
 
 // ClassifyDeviceFromID mengembalikan: ios | web | android | desktop | unknown.
+// CATATAN: format "AC"+hex adalah message-ID ASLI WhatsApp Android — TIDAK bisa
+// dipakai untuk membedakan bot dari HP Android sungguhan (bot pun memakainya).
 func ClassifyDeviceFromID(id string) string {
     switch {
     case reDevIOS.MatchString(id):
@@ -158,4 +160,38 @@ func ReactMessage(
 	)
 
 	return err
+}
+
+// ExtractTextMessage mengekstrak konten teks dari berbagai tipe pesan WA.
+// Dibutuhkan oleh handler.go (sebelumnya di meta.go).
+func ExtractTextMessage(msg *waProto.Message) string {
+	if msg == nil {
+		return ""
+	}
+	switch {
+	case msg.Conversation != nil:
+		return strings.TrimSpace(msg.GetConversation())
+	case msg.ExtendedTextMessage != nil:
+		return strings.TrimSpace(msg.ExtendedTextMessage.GetText())
+	case msg.ImageMessage != nil:
+		return strings.TrimSpace(msg.ImageMessage.GetCaption())
+	case msg.VideoMessage != nil:
+		return strings.TrimSpace(msg.VideoMessage.GetCaption())
+	case msg.DocumentMessage != nil:
+		return strings.TrimSpace(msg.DocumentMessage.GetCaption())
+	case msg.ReactionMessage != nil:
+		return strings.TrimSpace(msg.ReactionMessage.GetText())
+	case msg.TemplateButtonReplyMessage != nil:
+		return strings.TrimSpace(msg.TemplateButtonReplyMessage.GetSelectedID())
+	case msg.ProtocolMessage != nil && msg.ProtocolMessage.EditedMessage != nil:
+		em := msg.ProtocolMessage.EditedMessage
+		if r := em.RichResponseMessage; r != nil && len(r.Submessages) > 0 {
+			return strings.TrimSpace(r.Submessages[0].GetMessageText())
+		}
+		if em.ExtendedTextMessage != nil {
+			return strings.TrimSpace(em.ExtendedTextMessage.GetText())
+		}
+		return strings.TrimSpace(em.GetConversation())
+	}
+	return ""
 }
