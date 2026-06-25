@@ -441,6 +441,139 @@ func TopBotSenders(limit int) []BotSenderStat {
 	return out
 }
 
+// ====================== STATISTIK PER-GRUP (LIVE, dari msg.db) ======================
+//
+// Dipakai gstats agar laporan grup berkolaborasi dengan data live msg.db:
+// rasio manusia vs bot, sebaran device, jam tersibuk, pengirim unik — semuanya
+// data JUJUR langsung dari pesan yang benar-benar tiba (bukan angka karangan).
+// Bertumpu pada tabel `messages` yang ikut prune (retensi 7 hari), jadi nilainya
+// mencerminkan aktivitas beberapa hari terakhir.
+
+// GroupLiveStat = rangkuman aktivitas live sebuah grup pada jendela `Days` hari.
+type GroupLiveStat struct {
+	Days          int
+	Total         int            // total pesan tercatat
+	Media         int            // pesan media
+	HumanMsgs     int            // pesan ber-verdict bukan bot
+	BotMsgs       int            // pesan ber-verdict bot/baileys
+	UniqueSenders int            // jumlah pengirim unik
+	ActiveToday   int            // pesan sejak tengah malam (waktu lokal)
+	Hourly        [24]int        // sebaran pesan per jam (akumulasi seluruh jendela)
+	PeakHour      int            // jam tersibuk (0-23), -1 bila tak ada data
+	PeakHourVal   int            // jumlah pesan pada jam tersibuk
+	Devices       map[string]int // device_class → jumlah
+	Verdicts      map[string]int // verdict → jumlah
+}
+
+// GroupLiveStats menghitung rangkuman live untuk satu grup (chat = JID non-AD,
+// format sama dengan yang dipakai handler: evt.Info.Chat.ToNonAD().String()).
+func GroupLiveStats(chat string, days int) GroupLiveStat {
+	out := GroupLiveStat{
+		Days:     days,
+		PeakHour: -1,
+		Devices:  map[string]int{},
+		Verdicts: map[string]int{},
+	}
+	if msgDB == nil || chat == "" {
+		return out
+	}
+	if days <= 0 {
+		days = 7
+	}
+	since := time.Now().AddDate(0, 0, -days).Unix()
+	startToday := time.Now().Truncate(24 * time.Hour).Unix()
+
+	// Agregat utama dalam satu query.
+	msgDB.QueryRow(`SELECT
+			COUNT(*),
+			COALESCE(SUM(is_media),0),
+			COALESCE(SUM(is_bot),0),
+			COUNT(DISTINCT sender)
+		FROM messages WHERE chat = ? AND ts >= ?`,
+		chat, since).Scan(&out.Total, &out.Media, &out.BotMsgs, &out.UniqueSenders)
+	out.HumanMsgs = out.Total - out.BotMsgs
+	if out.HumanMsgs < 0 {
+		out.HumanMsgs = 0
+	}
+
+	msgDB.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat = ? AND ts >= ?`,
+		chat, startToday).Scan(&out.ActiveToday)
+
+	// Sebaran per jam (waktu lokal).
+	if rows, err := msgDB.Query(`SELECT CAST(strftime('%H', ts, 'unixepoch', 'localtime') AS INTEGER), COUNT(*)
+		FROM messages WHERE chat = ? AND ts >= ? GROUP BY 1`, chat, since); err == nil {
+		for rows.Next() {
+			var h, c int
+			if rows.Scan(&h, &c) == nil && h >= 0 && h < 24 {
+				out.Hourly[h] = c
+				if c > out.PeakHourVal {
+					out.PeakHourVal = c
+					out.PeakHour = h
+				}
+			}
+		}
+		rows.Close()
+	}
+
+	// Sebaran device & verdict.
+	scan := func(col string, dst map[string]int) {
+		rows, err := msgDB.Query(`SELECT `+col+`, COUNT(*) FROM messages
+			WHERE chat = ? AND ts >= ? GROUP BY `+col, chat, since)
+		if err != nil {
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var k string
+			var c int
+			if rows.Scan(&k, &c) == nil {
+				dst[nz(k, "unknown")] += c
+			}
+		}
+	}
+	scan("device_class", out.Devices)
+	scan("verdict", out.Verdicts)
+	return out
+}
+
+// GroupTopSendersLive mengembalikan pengirim paling aktif di sebuah grup pada
+// jendela `days` hari (berdasarkan data live msg.db, bukan akumulator bot.db).
+func GroupTopSendersLive(chat string, days, limit int) []BotSenderStat {
+	var out []BotSenderStat
+	if msgDB == nil || chat == "" {
+		return out
+	}
+	if days <= 0 {
+		days = 7
+	}
+	since := time.Now().AddDate(0, 0, -days).Unix()
+	rows, err := msgDB.Query(`SELECT sender, MAX(pushname), COUNT(*) c
+		FROM messages WHERE chat = ? AND ts >= ? AND sender != ''
+		GROUP BY sender ORDER BY c DESC LIMIT ?`, chat, since, limit)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s BotSenderStat
+		if rows.Scan(&s.Sender, &s.PushName, &s.Count) == nil {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// TopDevice mengembalikan kelas device dengan pesan terbanyak beserta jumlahnya.
+func (g GroupLiveStat) TopDevice() (string, int) {
+	best, bestN := "unknown", 0
+	for k, v := range g.Devices {
+		if v > bestN {
+			best, bestN = k, v
+		}
+	}
+	return best, bestN
+}
+
 // CloseMessageStore menutup koneksi msg.db (dipanggil saat shutdown).
 func CloseMessageStore() error {
 	if msgDB == nil {

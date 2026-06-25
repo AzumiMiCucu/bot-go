@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -277,99 +276,14 @@ func playSong(ctx *ContextBot, song ytSong, useCard bool) error {
 	return nil
 }
 
-// playCall mengunduh lagu ke file sementara lalu menelepon PENGIRIM pesan dan
-// memutar lagu itu begitu panggilan tersambung (memanfaatkan src.StartCall).
-// File audio sementara dihapus otomatis ketika panggilan berakhir.
+// playCall menelepon PENGIRIM perintah dan memutarkan lagu, lewat antrian
+// panggilan bersama (serial + retry). Lihat playcall.go.
 func playCall(ctx *ContextBot, song ytSong) error {
-	if src.CallClient == nil {
-		return ctx.Reply("⚠️ Subsistem panggilan belum aktif, tidak bisa `--call`.")
-	}
-
-	// Target = pengirim perintah (bukan grup; panggilan WA bersifat 1:1).
 	target := ctx.SenderJID.String()
 	if target == "" {
 		return ctx.Reply("⚠️ Tidak bisa menentukan nomor pengirim untuk ditelepon.")
 	}
-
-	_ = ctx.React("⏳")
-
-	// Ambil tautan & unduh audio.
-	mp3Res, err := src.YtMp3(song.URL)
-	if err != nil {
-		return ctx.Reply("❌ Gagal mengambil audio lagu ini.")
-	}
-	var mp3 ytMp3Res
-	if b, e := json.Marshal(mp3Res.Data); e == nil {
-		json.Unmarshal(b, &mp3)
-	}
-	if !mp3.Success || mp3.Result.DownloadURL == "" {
-		return ctx.Reply("❌ Tautan audio tidak tersedia untuk lagu ini.")
-	}
-
-	data, _, err := src.DownloadBytes(mp3.Result.DownloadURL)
-	if err != nil || len(data) == 0 {
-		return ctx.Reply("❌ Gagal mengunduh audio.")
-	}
-
-	// Tulis ke file sementara karena StartCall memutar audio dari PATH file.
-	tmp, err := os.CreateTemp("", "playcall-*.mp3")
-	if err != nil {
-		return ctx.Reply("❌ Gagal menyiapkan file audio sementara.")
-	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return ctx.Reply("❌ Gagal menulis file audio sementara.")
-	}
-	tmp.Close()
-
-	title := mp3.Result.Title
-	if title == "" {
-		title = song.Name
-	}
-
-	// notify melaporkan progres panggilan ke chat & membersihkan file saat selesai.
-	chatJID := ctx.ChatJID
-	client := ctx.Client
-	notify := func(label string) {
-		var text string
-		switch {
-		case label == "ringing":
-			text = "📲 Berdering..."
-		case label == "active":
-			text = "🟢 Tersambung! Memutar lagu..."
-		case strings.HasPrefix(label, "ended"):
-			os.Remove(tmpPath) // panggilan berakhir → hapus file sementara
-			reason := strings.TrimPrefix(label, "ended:")
-			if reason == "" || reason == "ended" {
-				text = "🔴 Panggilan berakhir."
-			} else {
-				text = "🔴 Panggilan berakhir (" + reason + ")."
-			}
-		default:
-			return // fase calling/connecting tak perlu dilaporkan
-		}
-		_, _ = client.SendMessage(context.Background(), chatJID, &waProto.Message{
-			Conversation: proto.String(text),
-		}, src.AndroidExtra())
-	}
-
-	callID, peer, err := src.StartCall(ctx.Ctx, target, tmpPath, notify)
-	if err != nil {
-		os.Remove(tmpPath)
-		_ = ctx.React("❌")
-		return ctx.Reply("❌ Gagal menelepon: " + err.Error())
-	}
-
-	_ = ctx.React("📞")
-	msg := fmt.Sprintf("☎️ *Memanggil & memutar lagu...*\n👤 %s\n🎶 %s — %s",
-		peer, title, song.Artist.Name)
-	if song.Duration > 0 {
-		msg += fmt.Sprintf("\n⏱️ %s", fmtDuration(song.Duration))
-	}
-	msg += fmt.Sprintf("\n🆔 %s", callID)
-	return ctx.Reply(msg)
+	return startPlayCall(ctx, song, target, "+"+ctx.SenderJID.User)
 }
 
 // sendAudio mengunggah & mengirim audio playable (bukan voice note).
