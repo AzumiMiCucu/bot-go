@@ -31,8 +31,8 @@ func init() {
 	RegisterCommand(Command{
 		Name:        "Keluarkan Member",
 		Category:    "Group",
-		Aliases:     []string{"kick", "remove"},
-		Pattern:     regexp.MustCompile(`(?i)^(?:kick|keluarkan|remove|tendang)\s+(.+)`),
+		Aliases:     []string{"kick", "remove","dor"},
+		Pattern:     regexp.MustCompile(`(?i)^(?:kick|dor|remove|tendang)\s+(.+)`),
 		Description: "Mengeluarkan member massal (reply/tag, khusus admin)",
 		Execute:     ExecuteKickMember,
 	})

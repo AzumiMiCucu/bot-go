@@ -265,7 +265,7 @@ type pcAllSession struct {
 func sendPlayCallList(ctx *ContextBot, query string, songs []ytSong, target, label string) error {
 	rb := src.NewAIRich().
 		SetTitle(fmt.Sprintf("☎️ Playcall: %s", query)).
-		SetFooter("Balas dengan NOMOR lagu untuk menelepon " + label)
+		SetFooter("Balas dengan NOMOR untuk memutar lagu")
 
 	for i, s := range songs {
 		rb.AddText(fmt.Sprintf("*%d.* %s — %s", i+1, s.Name, s.Artist.Name))

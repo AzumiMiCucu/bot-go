@@ -52,15 +52,16 @@ func ExecuteCekBot(ctx *ContextBot) error {
 	// Tapi kita ingin menganalisis PENGIRIM LAIN, bukan owner sendiri.
 	// Jika owner mengirim .cekbot (tanpa reply), analisis pesan owner = tidak berguna.
 	if targetUser == src.AppConfig.OwnerNumber {
-		return ctx.Reply("📌 *Cara pakai:* reply pesan yang mencurigakan dengan `!cekbot`\n\nBot akan menganalisis message-ID, sinyal Baileys, metadata device, dan banyak lagi.")
+		return ctx.Reply("📌 *Cara pakai:* reply pesan yang mencurigakan dengan `cekbot`\n\nBot akan menganalisis message-ID, sinyal Baileys, metadata device, dan banyak lagi.")
 	}
 
 	det := src.DetectBot(targetMsg)
 	return showDetection(ctx, &det, targetUser, targetPushName, "live")
 }
 
-// showDetection menyajikan hasil deteksi secara RINGKAS, berpusat pada verdict.
-// source: "live" (metadata raw asli, akurat) atau "terbatas" (hanya dari quote).
+// showDetection menyajikan hasil deteksi secara RINGKAS, berpusat pada verdict
+// (gaya khas proyek ini — BUKAN layout Target/Engine/Detection). source: "live"
+// (metadata raw asli, akurat) atau "terbatas" (hanya dari quote).
 func showDetection(ctx *ContextBot, det *src.BotDetectionResult, user, pushName, source string) error {
 	sb := strings.Builder{}
 	sb.WriteString("*「 ISBOT CHECKER 」*\n\n")
@@ -69,7 +70,7 @@ func showDetection(ctx *ContextBot, det *src.BotDetectionResult, user, pushName,
 	icon, label := verdictBadge(det.Verdict)
 	sb.WriteString(fmt.Sprintf("%s *%s*\n", icon, label))
 
-	// ── Pengirim · device ──
+	// ── Pengirim · platform ──
 	who := "@" + user
 	if pushName != "" {
 		who = pushName + " (@" + user + ")"
@@ -94,25 +95,28 @@ func showDetection(ctx *ContextBot, det *src.BotDetectionResult, user, pushName,
 	if source == "terbatas" {
 		sb.WriteString("⚠️ _Pesan tak tertangkap live — metadata raw tak lengkap, hasil terbatas._\n")
 	} else {
-		if det.HasDeviceListMD {
+		// isUseDevice: pembeda kunci WA Web resmi vs Baileys lama (keduanya bisa 3EB0).
+		if det.IsUseDevice {
 			enc := "E2EE"
 			if det.IsHostedEncryption {
 				enc = "HOSTED"
 			}
-			sb.WriteString(fmt.Sprintf("✓ DeviceListMetadata (%s)\n", enc))
-		} else if det.RawMessageContextInfo {
-			sb.WriteString("• Tanpa DeviceListMetadata _(normal untuk pesan grup)_\n")
-		}
-		if det.HasMessageSecret {
-			sb.WriteString("✓ MessageSecret\n")
+			sb.WriteString(fmt.Sprintf("✅ multi-device aktif (%s)\n", enc))
+		} else if det.IsSecondary {
+			sb.WriteString("❌ tanpa metadata multi-device\n")
 		}
 		if det.IsFromBotServer {
 			sb.WriteString("⚠️ Akun/server bot WhatsApp\n")
 		} else if det.HasBotMetadata || det.HasBotSecret || det.IsBotInvoke {
-			sb.WriteString("↪️ Metadata thread-bot _(interaksi dgn bot, bukan bukti pengirim bot)_\n")
+			sb.WriteString("↪️ Metadata thread-bot\n")
 		}
-		if det.IsBaileysID {
-			sb.WriteString(fmt.Sprintf("⚠️ ID Baileys (%s)\n", det.BaileysIDPrefix))
+		// Pisahkan sidik jari ID: BAE* = Baileys pasti; 3EB0 = ambigu.
+		if det.StrongBaileys {
+			sb.WriteString(fmt.Sprintf("⚠️ ID Baileys (%s) — sidik jari kuat\n", det.BaileysIDPrefix))
+		} else if det.IsBaileysID {
+			sb.WriteString("⚠️ ID 3EB0 tanpa metadata device\n")
+		} else if det.AmbiguousID {
+			sb.WriteString("• ID 3EB0 + multi-device\n")
 		}
 	}
 
@@ -126,7 +130,7 @@ func showDetection(ctx *ContextBot, det *src.BotDetectionResult, user, pushName,
 	return ctx.Reply(sb.String())
 }
 
-// verdictBadge memetakan verdict ke (ikon, label).
+// verdictBadge memetakan verdict ke (ikon, label) — gaya bahasa khas proyek ini.
 func verdictBadge(verdict string) (string, string) {
 	switch verdict {
 	case src.VerdictHuman:

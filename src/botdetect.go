@@ -13,14 +13,18 @@ import (
 // BOT / BAILEYS / DEVICE DETECTION UTILITIES
 // =================================================================
 
-// Baileys ID prefixes — library WhatsApp non-resmi (Baileys) punya
-// format message-ID khas yang tak dipakai client resmi:
+// Baileys ID prefixes — library WhatsApp non-resmi (Baileys) punya format
+// message-ID yang TUMPANG-TINDIH dengan client resmi, jadi harus dipisah:
 //
-//	BAE5 — Baileys multi-device (paling umum)
-//	3EB0 — Baileys varian / pre-MD
+//	BAE* (BAE5, BAE0..) — SIDIK JARI BAILEYS. Client WA resmi TAK PERNAH memakai
+//	                      prefix ini → bukti Baileys yang KUAT & berdiri sendiri.
+//	3EB0               — AMBIGU: dipakai BERSAMA oleh WA Web/Desktop RESMI dan
+//	                      Baileys lama. ID 3EB0 SENDIRIAN tak membuktikan apa pun;
+//	                      harus dikuatkan absennya metadata multi-device (isUseDevice)
+//	                      & messageSecret. Inilah pembeda "bot beneran vs WA Web".
 var (
-	reBaileysID         = regexp.MustCompile(`^(BAE5|3EB0|BAE[0-9A-F]{2})`) // semua prefix BAE*
-	reBaileysPrefixOnly = regexp.MustCompile(`^(BAE5|3EB0)`)                // explicit Baileys-only
+	reBaileysStrong = regexp.MustCompile(`^BAE[0-9A-F]{2}`) // keluarga BAE* — Baileys pasti
+	reBaileysWeb    = regexp.MustCompile(`^3EB0`)           // 3EB0 — ambigu (WA Web resmi ATAU Baileys lama)
 )
 
 // Verdict: kesimpulan akhir deteksi. Satu sumber kebenaran yang dipakai cekbot
@@ -43,9 +47,23 @@ type BotDetectionResult struct {
 	PushName   string
 
 	// Baileys signals
-	IsBaileysID     bool   // true bila message-ID cocok prefix Baileys
+	IsBaileysID     bool   // KESIMPULAN akhir: true bila pengirim memakai Baileys
 	BaileysIDPrefix string // prefix yang cocok (BAE5 / 3EB0 / dsb)
+	StrongBaileys   bool   // true bila ID dari keluarga BAE* (Baileys pasti, WA resmi tak pakai)
+	AmbiguousID     bool   // true bila ID 3EB0 (bisa WA Web resmi ATAU Baileys lama)
 	BaileysScore    int    // skor keyakinan Baileys (0-25)
+
+	// Display / engine fields (gaya "ISBOT CHECKER")
+	IDLength    int    // panjang message-ID
+	MessageType string // nama tipe pesan proto (extendedTextMessage, conversation, dll)
+	Platform    string // platform dari format ID (web/android/ios/desktop/unknown) — alias DeviceClass
+	IsUseDevice bool   // true bila pesan membawa metadata multi-device ASLI (deviceListMetadata/messageSecret)
+
+	// Hasil 4 sub-pemeriksaan engine: "OK" bila lolos, atau penanda masalah singkat.
+	TKCheck string // Token  — envelope/messageContextInfo (token e2ee) utuh
+	DVCheck string // Device — status device (primary/secondary) & index teridentifikasi
+	PFCheck string // Platform — platform terdeteksi dari format ID
+	IDCheck string // ID — format/panjang ID dikenali (vs sidik jari Baileys)
 
 	// Device signals
 	DeviceClass     string // ios / web / android / desktop / unknown (dari ClassifyDeviceFromID)
@@ -97,9 +115,13 @@ func DetectBot(evt *events.Message) BotDetectionResult {
 
 	// ── 1. Classify message-ID (Baileys + device type) ──
 	r.DeviceClass = ClassifyDeviceFromID(r.MessageID)
+	r.Platform = r.DeviceClass
 	r.IsUnknownDevice = r.DeviceClass == "unknown"
+	r.IDLength = len(r.MessageID)
+	r.MessageType = messageTypeName(evt.Message)
 
-	r.IsBaileysID, r.BaileysIDPrefix = CheckBaileysID(r.MessageID)
+	// Pisah sidik jari Baileys: BAE* = pasti; 3EB0 = ambigu (dikuatkan nanti).
+	r.StrongBaileys, r.AmbiguousID, r.BaileysIDPrefix = classifyBaileysID(r.MessageID)
 
 	// ── 2. Device addressing (informasional) + device-index (sinyal primary/secondary) ──
 	// Di grup utamakan SenderAlt (alamat asli) bila ada; selain itu Sender.
@@ -151,6 +173,22 @@ func DetectBot(evt *events.Message) BotDetectionResult {
 		evt.Info.Chat.Server == "bot" ||
 		strings.HasPrefix(r.SenderFull, "0@") ||
 		strings.HasSuffix(r.SenderFull, "@bot")
+
+	// ── 5b. isUseDevice — metadata multi-device ASLI (pembeda WA Web vs Baileys) ──
+	// WA Web/Desktop RESMI selalu mengikat envelope multi-device (deviceListMetadata
+	// dan/atau messageSecret pada messageContextInfo). Baileys lama yang memakai ID
+	// 3EB0 yang sama UMUMNYA tak menyertakannya. Inilah sinyal yang membuat ID 3EB0
+	// ambigu bisa dipisahkan: ada metadata device → WA Web; tak ada → Baileys.
+	r.IsUseDevice = r.HasDeviceListMD || r.IsMultiDevice || r.HasMessageSecret
+
+	// ── 5c. Finalisasi isBaileys ──
+	// BAE* → Baileys pasti. 3EB0 → Baileys HANYA bila tak ada metadata device asli
+	// (companion tanpa isUseDevice). Dengan begitu WA Web resmi (3EB0 + isUseDevice)
+	// TIDAK lagi salah divonis Baileys seperti sebelumnya.
+	r.IsBaileysID = r.StrongBaileys || (r.AmbiguousID && !r.IsUseDevice)
+
+	// ── 5d. Engine checks (TK/DV/PF/ID) ──
+	computeEngineChecks(&r, true)
 
 	// ── 6. Composite bot determination ──
 	// IsBot = akun bot sungguhan (server-level). botMetadata/BotInvoke TIDAK dihitung
@@ -229,8 +267,11 @@ func DetectBotFromQuoted(stanzaID, participant string, quoted *waProto.Message) 
 
 	// ── ID & device class ──
 	r.DeviceClass = ClassifyDeviceFromID(stanzaID)
+	r.Platform = r.DeviceClass
 	r.IsUnknownDevice = r.DeviceClass == "unknown"
-	r.IsBaileysID, r.BaileysIDPrefix = CheckBaileysID(stanzaID)
+	r.IDLength = len(stanzaID)
+	r.MessageType = messageTypeName(quoted)
+	r.StrongBaileys, r.AmbiguousID, r.BaileysIDPrefix = classifyBaileysID(stanzaID)
 
 	// ── Addressing & server ──
 	classifyAddressing(&r, participant)
@@ -263,6 +304,11 @@ func DetectBotFromQuoted(stanzaID, participant string, quoted *waProto.Message) 
 		}
 	}
 
+	// isUseDevice & finalisasi isBaileys (sama seperti jalur live, lihat DetectBot).
+	r.IsUseDevice = r.HasDeviceListMD || r.IsMultiDevice || r.HasMessageSecret
+	r.IsBaileysID = r.StrongBaileys || (r.AmbiguousID && !r.IsUseDevice)
+	computeEngineChecks(&r, r.RawMessageContextInfo)
+
 	// IsBot = akun bot sungguhan (server-level). botMetadata/BotInvoke TIDAK dihitung
 	// di sini — itu sinyal thread-bot (interaksi), bukan bukti pengirim adalah bot.
 	r.IsBot = r.IsFromBotServer
@@ -293,8 +339,9 @@ func classifyVerdict(r *BotDetectionResult, liveEnvelope bool) {
 		return
 	}
 
-	// 2. ID khas Baileys (BAE5/3EB0) — sidik jari library tak resmi.
-	if r.IsBaileysID {
+	// 2. Sidik jari Baileys KUAT (keluarga BAE*) — WA resmi tak pernah memakainya.
+	//    Ini menang atas metadata device apa pun (Baileys bisa memalsukan envelope).
+	if r.StrongBaileys {
 		r.Verdict = VerdictBaileys
 		r.VerdictReason = "ID Baileys (" + r.BaileysIDPrefix + ")"
 		return
@@ -329,32 +376,54 @@ func classifyVerdict(r *BotDetectionResult, liveEnvelope bool) {
 		return
 	}
 
+	// 5b. ID 3EB0 AMBIGU yang TAK didukung metadata device asli (tanpa isUseDevice).
+	//     Sampai di sini berarti: bukan primary, tanpa DeviceListMetadata, tanpa
+	//     messageSecret — companion yang memakai prefix 3EB0 namun TIDAK membawa
+	//     envelope multi-device seperti WA Web resmi. Inilah pemisah "bot beneran vs
+	//     WA Web": WA Web RESMI selalu isUseDevice=true (lolos di #4/#5 sbg manusia),
+	//     sedangkan Baileys lama ber-3EB0 jatuh ke sini. Hanya berlaku pada pesan LIVE
+	//     (di jalur quote envelope sudah dibuang WA, jadi tak bisa dipercaya).
+	if liveEnvelope && r.IsBaileysID && r.AmbiguousID && !r.IsUseDevice {
+		r.Verdict = VerdictBaileys
+		r.VerdictReason = "ID 3EB0 tanpa metadata multi-device (Baileys)"
+		return
+	}
+
 	// 6. CATATAN: metadata thread-bot (botMetadata/botSecret/BotInvoke) sengaja TIDAK
 	//    menghasilkan verdict apa pun — netral. Itu cuma menandai pesan ada di thread
 	//    bot (manusia di WA Web pun membawanya saat membalas bot). Memberinya SUSPECT
 	//    membuat manusia WA Web/Desktop kena captcha. Deteksi companion-bot diserahkan
 	//    ke sinyal PERILAKU (flood/typing/spam command) di antibot.
 
-	// 7. Tak ada bukti definitif. JANGAN menebak bot dari absennya bukti manusia.
-	//    ID device tak dikenal → suspect (sinyal lemah, butuh konfirmasi perilaku);
-	//    selain itu unknown. Bot yang menyamar (ID Android + metadata dibuang) sengaja
-	//    dibiarkan unknown di sini — ditangkap oleh sinyal PERILAKU (flood/repeat/typing),
-	//    bukan metadata satu pesan.
-	if r.IsUnknownDevice {
-		r.Verdict = VerdictSuspect
-		r.VerdictReason = "ID device tak dikenal, metadata tak lengkap"
+	// 7. Tak ada bukti CLIENT RESMI (bukan primary, tanpa DeviceListMetadata/isUseDevice,
+	//    bukan BAE*). Sesuai permintaan: yang "belum pasti" langsung diklasifikasi BOT —
+	//    pendekatan agresif, captcha antibot jadi penyaring akhir (manusia bisa menjawab).
+	//    HANYA pada pesan LIVE (envelope utuh) kita cukup yakin tak ada sinyal manusia.
+	//    Pada jalur quote (liveEnvelope=false) envelope sudah dibuang WA → data benar-benar
+	//    tak cukup, jadi tetap UNKNOWN agar tak salah menuduh pesan lama siapa pun.
+	if !liveEnvelope {
+		r.Verdict = VerdictUnknown
+		r.VerdictReason = "metadata tak lengkap (jalur quote) — tak bisa dipastikan"
 		return
 	}
-	r.Verdict = VerdictUnknown
-	r.VerdictReason = "tak ada bukti bot definitif"
+	if r.IsUnknownDevice {
+		r.Verdict = VerdictBot
+		r.VerdictReason = "ID device tak dikenal, tanpa metadata client resmi"
+		return
+	}
+	r.Verdict = VerdictBot
+	r.VerdictReason = "tanpa bukti client resmi — diklasifikasi bot"
 }
 
 func computeBaileysScore(r *BotDetectionResult) int {
 	s := 0
 
-	// ID Baileys eksplisit → sinyal TERKUAT
-	if r.IsBaileysID {
+	// Sidik jari Baileys KUAT (BAE*) → sinyal TERKUAT.
+	if r.StrongBaileys {
 		s += 12
+	} else if r.IsBaileysID {
+		// ID 3EB0 ambigu yang tak didukung metadata device → sinyal sedang.
+		s += 8
 	}
 
 	// ID unknown (tidak cocok client resmi)
@@ -393,14 +462,115 @@ func HasBotSignals(evt *events.Message) bool {
 	return r.Verdict == VerdictBot || r.Verdict == VerdictBaileys
 }
 
-// CheckBaileysID memeriksa apakah message-ID cocok dengan pola Baileys.
-// Mengembalikan (isBaileys, prefix). Dipakai oleh cekbot (partial analysis).
+// classifyBaileysID memeriksa sidik jari Baileys pada message-ID dan MEMISAHKAN
+// antara bukti KUAT dan AMBIGU:
+//
+//	strong=true  → keluarga BAE* (BAE5/BAE0..). WA resmi TAK PERNAH memakainya →
+//	               cukup untuk memvonis Baileys sendirian.
+//	ambiguous=true → prefix 3EB0. Dipakai BERSAMA oleh WA Web/Desktop resmi dan
+//	               Baileys lama → BUKAN bukti sendirian; harus dikuatkan absennya
+//	               metadata multi-device (isUseDevice).
+//
+// prefix = potongan prefix yang cocok (untuk ditampilkan).
+func classifyBaileysID(id string) (strong, ambiguous bool, prefix string) {
+	if reBaileysStrong.MatchString(id) {
+		return true, false, id[:4]
+	}
+	if reBaileysWeb.MatchString(id) {
+		return false, true, "3EB0"
+	}
+	return false, false, ""
+}
+
+// CheckBaileysID — kompat lama: true bila ID membawa sidik jari Baileys apa pun.
 func CheckBaileysID(id string) (bool, string) {
-	if m := reBaileysPrefixOnly.FindStringSubmatch(id); len(m) > 0 {
-		return true, m[1]
+	strong, ambiguous, prefix := classifyBaileysID(id)
+	return strong || ambiguous, prefix
+}
+
+// messageTypeName mengembalikan nama tipe pesan proto (mis. "extendedTextMessage",
+// "conversation", "imageMessage") untuk ditampilkan di blok Target. Mengembalikan
+// "unknown" bila pesan nil atau tipe tak dikenal.
+func messageTypeName(m *waProto.Message) string {
+	if m == nil {
+		return "unknown"
 	}
-	if m := reBaileysID.FindStringSubmatch(id); len(m) > 0 {
-		return true, m[1]
+	switch {
+	case m.Conversation != nil:
+		return "conversation"
+	case m.ExtendedTextMessage != nil:
+		return "extendedTextMessage"
+	case m.ImageMessage != nil:
+		return "imageMessage"
+	case m.VideoMessage != nil:
+		return "videoMessage"
+	case m.AudioMessage != nil:
+		return "audioMessage"
+	case m.StickerMessage != nil:
+		return "stickerMessage"
+	case m.DocumentMessage != nil:
+		return "documentMessage"
+	case m.ContactMessage != nil:
+		return "contactMessage"
+	case m.LocationMessage != nil:
+		return "locationMessage"
+	case m.ReactionMessage != nil:
+		return "reactionMessage"
+	case m.ProtocolMessage != nil:
+		return "protocolMessage"
+	case m.ButtonsResponseMessage != nil:
+		return "buttonsResponseMessage"
+	case m.ListResponseMessage != nil:
+		return "listResponseMessage"
+	case m.TemplateButtonReplyMessage != nil:
+		return "templateButtonReplyMessage"
+	default:
+		return "unknown"
 	}
-	return false, ""
+}
+
+// computeEngineChecks mengisi 4 sub-pemeriksaan gaya "ISBOT CHECKER". Tiap check
+// "OK" bila lolos, atau penanda masalah singkat. liveEnvelope=false (jalur quote)
+// berarti envelope raw sudah dibuang WA → TK check terbatas.
+//
+//	TK (Token)    — envelope/messageContextInfo (token e2ee) terbaca utuh
+//	DV (Device)   — status & index device teridentifikasi (primary/secondary)
+//	PF (Platform) — platform terdeteksi dari format ID
+//	ID            — format/panjang message-ID dikenali (vs sidik jari Baileys)
+func computeEngineChecks(r *BotDetectionResult, liveEnvelope bool) {
+	// TK — token/envelope.
+	switch {
+	case !liveEnvelope:
+		r.TKCheck = "LIMITED" // jalur quote: envelope raw sudah dibuang WA
+	case r.IsHostedEncryption:
+		r.TKCheck = "HOSTED" // token non-E2EE (business/cloud API)
+	default:
+		r.TKCheck = "OK"
+	}
+
+	// DV — device.
+	if r.IsUseDevice || r.IsPrimary || r.IsSecondary {
+		r.DVCheck = "OK"
+	} else {
+		r.DVCheck = "NODEV"
+	}
+
+	// PF — platform.
+	if r.Platform != "" && r.Platform != "unknown" {
+		r.PFCheck = "OK"
+	} else {
+		r.PFCheck = "UNKNOWN"
+	}
+
+	// ID — format message-ID.
+	switch {
+	case r.StrongBaileys:
+		r.IDCheck = "BAILEYS"
+	case r.IsBaileysID:
+		r.IDCheck = "SUSPECT" // 3EB0 ambigu tanpa metadata device
+	case r.IsUnknownDevice:
+		r.IDCheck = "UNKNOWN"
+	default:
+		r.IDCheck = "OK"
+	}
 }
