@@ -129,6 +129,13 @@ func HandleAntilink(ctx *ContextBot) bool {
 		return false
 	}
 
+	// Antilink hanya berguna bila BOT admin (tanpa admin, hapus pesan mustahil).
+	// Bot bukan admin → diam total: jangan kirim peringatan yang menyesatkan
+	// ("dihapus") padahal pesan tak benar-benar bisa dihapus.
+	if !botIsGroupAdmin(ctx, groupID) {
+		return false
+	}
+
 	text := strings.ToLower(strings.TrimSpace(ctx.TextMessage))
 	if text == "" {
 		return false

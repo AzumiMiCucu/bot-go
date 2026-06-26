@@ -242,6 +242,15 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		return
 	}
 
+	// =================================================================
+	// AUTO-RESPON (kustom owner): balas otomatis berdasarkan keyword tersimpan.
+	// Hanya bila pesan BUKAN command (command menang) & bot tidak mode self
+	// (dicek di dalam HandleAutoRespon). Berlaku untuk semua anggota grup publik.
+	// =================================================================
+	if matchedCommand == nil && commands.HandleAutoRespon(ctxBot) {
+		return
+	}
+
 	// Tidak ada command yang cocok → abaikan (tidak ada lagi fallback AI).
 	if matchedCommand == nil {
 		return

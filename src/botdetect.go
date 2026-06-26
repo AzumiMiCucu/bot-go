@@ -70,6 +70,10 @@ type BotDetectionResult struct {
 	IsUnknownDevice bool   // true bila DeviceClass == unknown
 	AddressingMode  string // pn / lid — HANYA informasional (lid bukan sinyal bot, dipakai semua HP modern)
 	IsMultiDevice   bool   // true bila ada DeviceListMetadata atau DeviceSentMeta
+	IsGroup         bool   // true bila pesan datang dari GRUP. PENTING: pesan teks grup
+	// dienkripsi Sender Key (skmsg) sehingga TAK membawa DeviceListMetadata per-pesan —
+	// jadi di grup, absennya metadata multi-device BUKAN sinyal bot (berlaku untuk HP
+	// utama MAUPUN perangkat tertaut/companion resmi).
 
 	// Device-index dari JID (sumber primary/secondary yang BENAR — bukan pn/lid).
 	// Device 0 = HP UTAMA (primary): registrasi nomor langsung; Baileys/whatsmeow
@@ -111,6 +115,7 @@ func DetectBot(evt *events.Message) BotDetectionResult {
 		SenderFull: evt.Info.Sender.String(),
 		SenderUser: evt.Info.Sender.ToNonAD().User,
 		PushName:   evt.Info.PushName,
+		IsGroup:    evt.Info.IsGroup,
 	}
 
 	// ── 1. Classify message-ID (Baileys + device type) ──
@@ -185,7 +190,14 @@ func DetectBot(evt *events.Message) BotDetectionResult {
 	// BAE* → Baileys pasti. 3EB0 → Baileys HANYA bila tak ada metadata device asli
 	// (companion tanpa isUseDevice). Dengan begitu WA Web resmi (3EB0 + isUseDevice)
 	// TIDAK lagi salah divonis Baileys seperti sebelumnya.
-	r.IsBaileysID = r.StrongBaileys || (r.AmbiguousID && !r.IsUseDevice)
+	//
+	// PENTING (perbaikan false-positive perangkat tertaut): di GRUP, pesan teks
+	// dienkripsi Sender Key (skmsg) sehingga TAK pernah membawa deviceListMetadata/
+	// messageSecret per-pesan — jadi isUseDevice WAJAR bernilai false di grup, baik
+	// dari HP utama maupun perangkat tertaut RESMI (WA Web/Desktop/HP lain). Karena
+	// itu "3EB0 + tanpa isUseDevice" TIDAK boleh dianggap Baileys saat di grup; hanya
+	// sidik jari KUAT (BAE*) yang berlaku di grup.
+	r.IsBaileysID = r.StrongBaileys || (r.AmbiguousID && !r.IsUseDevice && !r.IsGroup)
 
 	// ── 5d. Engine checks (TK/DV/PF/ID) ──
 	computeEngineChecks(&r, true)
@@ -377,42 +389,47 @@ func classifyVerdict(r *BotDetectionResult, liveEnvelope bool) {
 	}
 
 	// 5b. ID 3EB0 AMBIGU yang TAK didukung metadata device asli (tanpa isUseDevice).
-	//     Sampai di sini berarti: bukan primary, tanpa DeviceListMetadata, tanpa
-	//     messageSecret — companion yang memakai prefix 3EB0 namun TIDAK membawa
-	//     envelope multi-device seperti WA Web resmi. Inilah pemisah "bot beneran vs
-	//     WA Web": WA Web RESMI selalu isUseDevice=true (lolos di #4/#5 sbg manusia),
-	//     sedangkan Baileys lama ber-3EB0 jatuh ke sini. Hanya berlaku pada pesan LIVE
-	//     (di jalur quote envelope sudah dibuang WA, jadi tak bisa dipercaya).
+	//     CATATAN: r.IsBaileysID untuk 3EB0 kini HANYA true di luar grup (lihat 5c di
+	//     DetectBot) — sebab di grup absennya metadata adalah hal NORMAL (skmsg), bukan
+	//     sinyal Baileys. Jadi cabang ini menangkap Baileys lama ber-3EB0 pada chat
+	//     PRIBADI, sementara perangkat tertaut resmi (WA Web 3EB0) lolos sebagai manusia
+	//     lewat #4/#5/#6.
 	if liveEnvelope && r.IsBaileysID && r.AmbiguousID && !r.IsUseDevice {
 		r.Verdict = VerdictBaileys
 		r.VerdictReason = "ID 3EB0 tanpa metadata multi-device (Baileys)"
 		return
 	}
 
-	// 6. CATATAN: metadata thread-bot (botMetadata/botSecret/BotInvoke) sengaja TIDAK
-	//    menghasilkan verdict apa pun — netral. Itu cuma menandai pesan ada di thread
-	//    bot (manusia di WA Web pun membawanya saat membalas bot). Memberinya SUSPECT
-	//    membuat manusia WA Web/Desktop kena captcha. Deteksi companion-bot diserahkan
-	//    ke sinyal PERILAKU (flood/typing/spam command) di antibot.
+	// 6. BUKTI POSITIF MANUSIA — PERANGKAT TERTAUT (companion) RESMI. Sampai di sini
+	//    sudah lolos semua sidik jari bot: bukan server bot, bukan BAE*, bukan HOSTED,
+	//    bukan 3EB0-tanpa-metadata (di chat pribadi). Bila message-ID-nya cocok FORMAT
+	//    client WhatsApp ASLI (android/ios/web/desktop — bukan "unknown"), ini perangkat
+	//    tertaut milik MANUSIA: WhatsApp di HP lain via "perangkat tertaut", WA Web, atau
+	//    WA Desktop. Semuanya companion (device-index != 0) PERSIS seperti bot library,
+	//    jadi device-index SENDIRI tak pernah membuktikan bot. Inilah perbaikan utama:
+	//    dulu companion tanpa DeviceListMetadata langsung divonis BOT, padahal pesan teks
+	//    grup dari perangkat tertaut asli pun NORMAL tanpa DLM (Sender Key/skmsg).
+	if liveEnvelope && !r.IsUnknownDevice && !r.IsBaileysID {
+		// Primary (device 0) sudah ditangani #4; di sini pasti companion resmi.
+		r.Verdict = VerdictHuman
+		r.VerdictReason = "perangkat tertaut (companion) — klien WA asli, E2EE"
+		return
+	}
 
-	// 7. Tak ada bukti CLIENT RESMI (bukan primary, tanpa DeviceListMetadata/isUseDevice,
-	//    bukan BAE*). Sesuai permintaan: yang "belum pasti" langsung diklasifikasi BOT —
-	//    pendekatan agresif, captcha antibot jadi penyaring akhir (manusia bisa menjawab).
-	//    HANYA pada pesan LIVE (envelope utuh) kita cukup yakin tak ada sinyal manusia.
-	//    Pada jalur quote (liveEnvelope=false) envelope sudah dibuang WA → data benar-benar
-	//    tak cukup, jadi tetap UNKNOWN agar tak salah menuduh pesan lama siapa pun.
+	// 7. Jalur quote (liveEnvelope=false): envelope sudah dibuang WA → data tak cukup,
+	//    tetap UNKNOWN agar tak salah menuduh pesan lama siapa pun.
 	if !liveEnvelope {
 		r.Verdict = VerdictUnknown
 		r.VerdictReason = "metadata tak lengkap (jalur quote) — tak bisa dipastikan"
 		return
 	}
-	if r.IsUnknownDevice {
-		r.Verdict = VerdictBot
-		r.VerdictReason = "ID device tak dikenal, tanpa metadata client resmi"
-		return
-	}
+
+	// 8. Tersisa: pesan LIVE dengan FORMAT message-ID TAK DIKENAL (tak cocok pola client
+	//    WhatsApp mana pun) DAN tanpa bukti client resmi. Inilah satu-satunya kasus yang
+	//    masih diklasifikasi BOT secara agresif — format ID asing kuat berkorelasi dengan
+	//    library/bot custom. Captcha antibot tetap jadi penyaring akhir bila keliru.
 	r.Verdict = VerdictBot
-	r.VerdictReason = "tanpa bukti client resmi — diklasifikasi bot"
+	r.VerdictReason = "format ID tak dikenal, tanpa metadata client resmi"
 }
 
 func computeBaileysScore(r *BotDetectionResult) int {

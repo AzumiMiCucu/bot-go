@@ -102,6 +102,10 @@ func showDetection(ctx *ContextBot, det *src.BotDetectionResult, user, pushName,
 				enc = "HOSTED"
 			}
 			sb.WriteString(fmt.Sprintf("✅ multi-device aktif (%s)\n", enc))
+		} else if det.IsSecondary && det.Verdict == src.VerdictHuman {
+			// Companion resmi di grup: pesan teks dienkripsi Sender Key (skmsg) →
+			// WAJAR tanpa metadata multi-device per-pesan. Bukan sinyal bot.
+			sb.WriteString("🔗 perangkat tertaut (E2EE grup/skmsg)\n")
 		} else if det.IsSecondary {
 			sb.WriteString("❌ tanpa metadata multi-device\n")
 		}

@@ -329,9 +329,11 @@ func HandleAntibot(ctx *ContextBot) bool {
 		reasons = append(reasons, "spam command bot")
 	}
 
-	// DEBUG: tampilkan verdict & skor tiap pesan di grup ber-antibot (untuk tuning).
-	fmt.Printf("[ANTIBOT] grup=%s pengirim=%s id=%q dev=%s deviceIdx=%d(companion) verdict=%s(baileysScore=%d) skor=%d/%d alasan=%v presence=%v\n",
+	// DEBUG: tampilkan verdict, engine checks (TK/DV/PF/ID) & skor tiap pesan di
+	// grup ber-antibot (untuk tuning). Engine checks ikut dihitung di DetectBot.
+	fmt.Printf("[ANTIBOT] grup=%s pengirim=%s id=%q dev=%s deviceIdx=%d(companion) verdict=%s(baileysScore=%d) engine=[TK:%s DV:%s PF:%s ID:%s] useDevice=%v skor=%d/%d alasan=%v presence=%v\n",
 		groupID, su, string(ctx.Msg.Info.ID), dev, det.DeviceID, det.Verdict, det.BaileysScore,
+		det.TKCheck, det.DVCheck, det.PFCheck, det.IDCheck, det.IsUseDevice,
 		score, antibotThreshold, reasons, presenceActive())
 
 	if score < antibotThreshold {

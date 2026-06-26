@@ -1,17 +1,14 @@
 package commands
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"regexp"
 	"strings"
 	"time"
+
+	"bot-go/src"
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
@@ -30,47 +27,18 @@ func init() {
 }
 
 func ExecuteSticker(ctx *ContextBot) error {
-	var mediaData []byte
-	var isVideo bool
-	var err error
-
-	// 1. Ekstrak Gambar/Video (Bisa dari Reply, bisa dari Caption langsung)
-	quoted := ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage()
-
-	if quoted != nil {
-		if quoted.GetImageMessage() != nil {
-			mediaData, err = ctx.Client.Download(context.Background(), quoted.GetImageMessage())
-		} else if quoted.GetVideoMessage() != nil {
-			mediaData, err = ctx.Client.Download(context.Background(), quoted.GetVideoMessage())
-			isVideo = true
-		}
-	} else {
-		if ctx.Msg.Message.GetImageMessage() != nil {
-			mediaData, err = ctx.Client.Download(context.Background(), ctx.Msg.Message.GetImageMessage())
-		} else if ctx.Msg.Message.GetVideoMessage() != nil {
-			mediaData, err = ctx.Client.Download(context.Background(), ctx.Msg.Message.GetVideoMessage())
-			isVideo = true
-		}
-	}
-
-	if len(mediaData) == 0 {
-		return ctx.Reply("❌ Harap kirim gambar/video dengan caption *s* atau balas (reply) media dengan pesan *s*.")
+	// 1. Ekstrak media: gambar / video / STIKER / view-once (sekali lihat),
+	//    baik dari reply maupun caption langsung.
+	mediaData, filename, ok := extractStickerSource(ctx)
+	if !ok || len(mediaData) == 0 {
+		return ctx.Reply("❌ Kirim/Balas *gambar, video, stiker,* atau media *sekali lihat* dengan perintah *s*.\n\nOpsional: `s NamaPack|NamaAuthor`")
 	}
 
 	ctx.Reply("⏳ Sedang memproses media menjadi stiker...")
 
-	// 2. Persiapan payload ke sticker-api.openwa.dev
-	base64Str := base64.StdEncoding.EncodeToString(mediaData)
-	mimeType := "image/jpeg"
-	endpoint := "prepareWebp"
-	if isVideo {
-		mimeType = "video/mp4"
-		endpoint = "convertMp4BufferToWebpDataUrl"
-	}
-
-	// 3. Tentukan Nama Pack & Author dari Args (opsional: s PackKu|Namaku)
+	// 2. Tentukan Nama Pack & Author dari Args (opsional: s PackKu|Namaku)
 	packName := "Sticker by"
-	authorName := ctx.PushName // Default menggunakan nama profil WA user
+	authorName := ctx.PushName // Default: nama profil WA user
 	if ctx.Args != "" {
 		parts := strings.Split(ctx.Args, "|")
 		packName = strings.TrimSpace(parts[0])
@@ -79,62 +47,18 @@ func ExecuteSticker(ctx *ContextBot) error {
 		}
 	}
 
-	payload := map[string]interface{}{
-		"stickerMetadata": map[string]interface{}{
-			"pack":   packName,
-			"author": authorName,
-			"keepScale": true,
-		},
-	}
-
-	if isVideo {
-		payload["file"] = fmt.Sprintf("data:%s;base64,%s", mimeType, base64Str)
-	} else {
-		payload["image"] = fmt.Sprintf("data:%s;base64,%s", mimeType, base64Str)
-	}
-
-	jsonPayload, _ := json.Marshal(payload)
-
-	// 4. Hit API Konversi WebP
-	resp, err := http.Post("https://sticker-api.openwa.dev/"+endpoint, "application/json", bytes.NewBuffer(jsonPayload))
+	// 3. Konversi via API ps.azumi.dev (terima file, balas buffer WebP langsung).
+	webpBytes, ctype, err := src.MakeSticker(mediaData, filename, authorName, packName)
 	if err != nil {
-		return ctx.Reply("❌ Gagal terhubung ke API stiker.")
+		return ctx.Reply("❌ Gagal mengonversi media menjadi stiker.")
 	}
-	defer resp.Body.Close()
-
-	bodyBytes, _ := io.ReadAll(resp.Body)
-
-	// 5. Mengekstrak Base64 WebP dari Respons API
-	var webpBase64 string
-	if isVideo {
-		// Endpoint Video merespons dengan String Base64 langsung ("data:image/webp;...")
-		respStr := string(bodyBytes)
-		respStr = strings.Trim(respStr, "\"")
-		parts := strings.Split(respStr, "base64,")
-		if len(parts) > 1 {
-			webpBase64 = parts[1]
-		} else {
-			webpBase64 = respStr
-		}
-	} else {
-		// Endpoint Gambar merespons dengan JSON
-		var apiResp struct {
-			WebpBase64 string `json:"webpBase64"`
-		}
-		json.Unmarshal(bodyBytes, &apiResp)
-		webpBase64 = apiResp.WebpBase64
+	// API tools membalas binary WebP; bila content-type JSON berarti error terselubung.
+	if len(webpBytes) == 0 || strings.Contains(ctype, "application/json") {
+		return ctx.Reply("❌ API stiker mengembalikan hasil tak valid.")
 	}
 
-	webpBytes, err := base64.StdEncoding.DecodeString(webpBase64)
-	if err != nil || len(webpBytes) == 0 {
-		return ctx.Reply("❌ Gagal mengonversi file menjadi format WebP.")
-	}
-
-	// 6. Injeksi Manual Metadata EXIF (Setara node-webpmux JS)
-	finalWebp := AddExif(webpBytes, packName, authorName)
-
-	// 7. Upload Stiker WebP ke server WhatsApp
-	respMedia, err := ctx.Client.Upload(context.Background(), finalWebp, whatsmeow.MediaImage)
+	// 4. Upload Stiker WebP ke server WhatsApp
+	respMedia, err := ctx.Client.Upload(context.Background(), webpBytes, whatsmeow.MediaImage)
 	if err != nil {
 		return ctx.Reply("❌ Gagal mengunggah stiker ke server WhatsApp.")
 	}
@@ -151,9 +75,47 @@ func ExecuteSticker(ctx *ContextBot) error {
 		},
 	}
 
-	// 8. Kirim Pesan Stiker
+	// 5. Kirim Pesan Stiker
 	_, err = ctx.Client.SendMessage(context.Background(), ctx.ChatJID, msgToSend, AndroidExtra())
 	return err
+}
+
+// extractStickerSource mencari media yang bisa dijadikan stiker dari pesan ini
+// atau pesan yang di-reply, termasuk yang dibungkus view-once (sekali lihat).
+// Mengembalikan (buffer, namaFile, true) bila ditemukan.
+func extractStickerSource(ctx *ContextBot) ([]byte, string, bool) {
+	quoted := ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage()
+	// Utamakan pesan yang di-reply; bila tak ada, pakai pesan saat ini.
+	for _, m := range []*waProto.Message{quoted, ctx.Msg.Message} {
+		if data, name, ok := mediaFromMessage(ctx, m); ok {
+			return data, name, true
+		}
+	}
+	return nil, "", false
+}
+
+// mediaFromMessage mengunduh gambar/video/stiker dari satu pesan (membuka bungkus
+// view-once lebih dulu). namaFile mengikuti tipe agar API mudah mengenali format.
+func mediaFromMessage(ctx *ContextBot, m *waProto.Message) ([]byte, string, bool) {
+	m = unwrapMessage(m)
+	if m == nil {
+		return nil, "", false
+	}
+	switch {
+	case m.GetImageMessage() != nil:
+		if d, err := ctx.Client.Download(context.Background(), m.GetImageMessage()); err == nil && len(d) > 0 {
+			return d, "image.jpg", true
+		}
+	case m.GetVideoMessage() != nil:
+		if d, err := ctx.Client.Download(context.Background(), m.GetVideoMessage()); err == nil && len(d) > 0 {
+			return d, "video.mp4", true
+		}
+	case m.GetStickerMessage() != nil:
+		if d, err := ctx.Client.Download(context.Background(), m.GetStickerMessage()); err == nil && len(d) > 0 {
+			return d, "sticker.webp", true
+		}
+	}
+	return nil, "", false
 }
 
 // ==========================================

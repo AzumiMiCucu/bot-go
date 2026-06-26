@@ -152,18 +152,23 @@ func (db *Database) loadLinksetCache() {
 	linksetLoaded = true
 }
 
-// GetLinkPatterns mengembalikan daftar pola link yang diblokir grup.
-// Bila kosong → default [chat.whatsapp.com] (link grup WA).
+// GetLinkPatterns mengembalikan daftar pola link yang diblokir grup. Link UNDANGAN
+// GRUP WA (chat.whatsapp.com) SELALU diblokir — itu tujuan inti antilink — lalu
+// ditambah pola custom grup. Dulu menambah pola custom diam-diam MEMBUANG default
+// ini (bug): grup yang menambah mis. "tiktok.com" jadi tak lagi memblokir link grup.
 func (db *Database) GetLinkPatterns(groupID string) []string {
 	db.loadLinksetCache()
 	linksetCacheMu.RLock()
 	pats := linksetCache[groupID]
 	linksetCacheMu.RUnlock()
-	if len(pats) == 0 {
-		return []string{DefaultLinkPattern}
+
+	out := make([]string, 0, len(pats)+1)
+	out = append(out, DefaultLinkPattern) // selalu blokir link undangan grup WA
+	for _, p := range pats {
+		if p != "" && p != DefaultLinkPattern { // hindari duplikat default
+			out = append(out, p)
+		}
 	}
-	out := make([]string, len(pats))
-	copy(out, pats)
 	return out
 }
 

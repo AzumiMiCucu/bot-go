@@ -80,6 +80,9 @@ func main() {
 	if err := src.InitMessageStore(); err != nil {
 		fmt.Printf("[DB] ⚠️ msg.db gagal diinisialisasi: %v\n", err)
 	}
+	if err := src.InitResponDB(); err != nil {
+		fmt.Printf("[DB] ⚠️ respon.db gagal diinisialisasi: %v\n", err)
+	}
 
 	fmt.Printf("[SYSTEM] 📚 Memuat %d modul perintah...\n", len(src.CommandRegistry))
 
@@ -149,4 +152,5 @@ func main() {
 	client.Disconnect()
 	src.DB.Close()
 	src.CloseMessageStore()
+	src.CloseResponDB()
 }
