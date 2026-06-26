@@ -97,7 +97,7 @@ func extractStickerSource(ctx *ContextBot) ([]byte, string, bool) {
 // mediaFromMessage mengunduh gambar/video/stiker dari satu pesan (membuka bungkus
 // view-once lebih dulu). namaFile mengikuti tipe agar API mudah mengenali format.
 func mediaFromMessage(ctx *ContextBot, m *waProto.Message) ([]byte, string, bool) {
-	m = unwrapMessage(m)
+	m = src.UnwrapMessage(m)
 	if m == nil {
 		return nil, "", false
 	}

@@ -1,22 +1,20 @@
 package src
 
 import (
-    "fmt"
-	"unicode/utf8"
-	"encoding/json"
-		"crypto/rand"
+	"context"
+	"crypto/rand"
 	"encoding/hex"
-	     	"strings"
-	     "regexp"
-	     "context"
-	     "go.mau.fi/whatsmeow"
+	"encoding/json"
+	"fmt"
+	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
-	    
-	    
-	)
+	"regexp"
+	"strings"
+	"unicode/utf8"
+)
 
 func CleanUTF8(s string) string {
 	if utf8.ValidString(s) {
@@ -34,7 +32,6 @@ func CleanUTF8(s string) string {
 	}
 	return string(v)
 }
-
 
 func Print(data ...interface{}) {
 	if len(data) == 0 {
@@ -90,44 +87,44 @@ func Print(data ...interface{}) {
 	fmt.Println()
 }
 func GenerateAndroidMessageID() types.MessageID {
-    b := make([]byte, 15)
-    rand.Read(b)
-    return types.MessageID("AC" + strings.ToUpper(hex.EncodeToString(b)))
+	b := make([]byte, 15)
+	rand.Read(b)
+	return types.MessageID("AC" + strings.ToUpper(hex.EncodeToString(b)))
 }
 
 // AndroidExtra mengembalikan SendRequestExtra dengan message-ID custom format
 // ANDROID ("AC"+30hex = 32 char). Pakai ini di SEMUA client.SendMessage agar
 // semua pesan keluar konsisten ber-ID android.
 func AndroidExtra() whatsmeow.SendRequestExtra {
-    return whatsmeow.SendRequestExtra{ID: GenerateAndroidMessageID()}
+	return whatsmeow.SendRequestExtra{ID: GenerateAndroidMessageID()}
 }
 
 // Klasifikasi tipe device dari FORMAT message-ID. Client WhatsApp asli menghasilkan
 // ID dengan pola khas per-platform. ID yang tidak cocok pola mana pun ("unknown")
 // sangat mungkin dari bot/library custom → dipakai anti-bot sebagai sinyal KUAT.
 var (
-    reDevIOS     = regexp.MustCompile(`^3A.{18}$`)       // iOS
-    reDevWeb     = regexp.MustCompile(`^3E.{20}$`)       // WhatsApp Web
-    reDevAndroid = regexp.MustCompile(`^(.{21}|.{32})$`) // Android ("AC"+30hex = 32 char = format ASLI WA Android)
-    reDevDesktop = regexp.MustCompile(`^(3F|.{18}$)`)    // Desktop
+	reDevIOS     = regexp.MustCompile(`^3A.{18}$`)       // iOS
+	reDevWeb     = regexp.MustCompile(`^3E.{20}$`)       // WhatsApp Web
+	reDevAndroid = regexp.MustCompile(`^(.{21}|.{32})$`) // Android ("AC"+30hex = 32 char = format ASLI WA Android)
+	reDevDesktop = regexp.MustCompile(`^(3F|.{18}$)`)    // Desktop
 )
 
 // ClassifyDeviceFromID mengembalikan: ios | web | android | desktop | unknown.
 // CATATAN: format "AC"+hex adalah message-ID ASLI WhatsApp Android — TIDAK bisa
 // dipakai untuk membedakan bot dari HP Android sungguhan (bot pun memakainya).
 func ClassifyDeviceFromID(id string) string {
-    switch {
-    case reDevIOS.MatchString(id):
-        return "ios"
-    case reDevWeb.MatchString(id):
-        return "web"
-    case reDevAndroid.MatchString(id):
-        return "android"
-    case reDevDesktop.MatchString(id):
-        return "desktop"
-    default:
-        return "unknown"
-    }
+	switch {
+	case reDevIOS.MatchString(id):
+		return "ios"
+	case reDevWeb.MatchString(id):
+		return "web"
+	case reDevAndroid.MatchString(id):
+		return "android"
+	case reDevDesktop.MatchString(id):
+		return "desktop"
+	default:
+		return "unknown"
+	}
 }
 
 func ReactMessage(
@@ -194,4 +191,74 @@ func ExtractTextMessage(msg *waProto.Message) string {
 		return strings.TrimSpace(em.GetConversation())
 	}
 	return ""
+}
+
+// =================================================================
+// HELPER MEDIA (dipindah dari commands/azumi_api.go). Hal yang butuh whatsmeow:
+// buka bungkus view-once, unduh gambar/stiker, & kirim buffer gambar. Dipakai
+// lintas-paket oleh commands → diekspor (UnwrapMessage/DownloadImageFrom/SendImageBytes).
+// =================================================================
+
+// UnwrapMessage membuka bungkus pesan view-once (sekali lihat) & documentWithCaption
+// agar media di dalamnya bisa diakses. Mengembalikan pesan asli bila bukan bungkus.
+func UnwrapMessage(m *waProto.Message) *waProto.Message {
+	if m == nil {
+		return nil
+	}
+	switch {
+	case m.GetViewOnceMessage().GetMessage() != nil:
+		return m.GetViewOnceMessage().GetMessage()
+	case m.GetViewOnceMessageV2().GetMessage() != nil:
+		return m.GetViewOnceMessageV2().GetMessage()
+	case m.GetViewOnceMessageV2Extension().GetMessage() != nil:
+		return m.GetViewOnceMessageV2Extension().GetMessage()
+	case m.GetDocumentWithCaptionMessage().GetMessage() != nil:
+		return m.GetDocumentWithCaptionMessage().GetMessage()
+	}
+	return m
+}
+
+// DownloadImageFrom mengambil buffer GAMBAR/STIKER dari sebuah pesan (langsung
+// atau view-once). Mengembalikan (data, true) bila ada, atau (nil, false).
+func DownloadImageFrom(ctx *ContextBot, m *waProto.Message) ([]byte, bool) {
+	m = UnwrapMessage(m)
+	if m == nil {
+		return nil, false
+	}
+	if img := m.GetImageMessage(); img != nil {
+		if data, err := ctx.Client.Download(context.Background(), img); err == nil && len(data) > 0 {
+			return data, true
+		}
+	}
+	if st := m.GetStickerMessage(); st != nil {
+		if data, err := ctx.Client.Download(context.Background(), st); err == nil && len(data) > 0 {
+			return data, true
+		}
+	}
+	return nil, false
+}
+
+// SendImageBytes mengunggah & mengirim buffer gambar sebagai pesan gambar.
+func SendImageBytes(ctx *ContextBot, data []byte, mimeType, caption string) error {
+	up, err := ctx.Client.Upload(context.Background(), data, whatsmeow.MediaImage)
+	if err != nil {
+		return ctx.Reply("❌ Gagal mengunggah hasil ke server WhatsApp.")
+	}
+	length := uint64(len(data))
+	msg := &waProto.Message{
+		ImageMessage: &waProto.ImageMessage{
+			URL:           &up.URL,
+			DirectPath:    &up.DirectPath,
+			MediaKey:      up.MediaKey,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			FileLength:    &length,
+			Mimetype:      &mimeType,
+		},
+	}
+	if caption != "" {
+		msg.ImageMessage.Caption = &caption
+	}
+	_, err = ctx.Client.SendMessage(context.Background(), ctx.ChatJID, msg, AndroidExtra())
+	return err
 }

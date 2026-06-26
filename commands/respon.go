@@ -394,7 +394,7 @@ func sendRespon(ctx *ContextBot, r src.Respon) error {
 func extractResponMedia(ctx *ContextBot) (rtype string, data []byte, mime, filename string) {
 	quoted := ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage()
 	for _, m := range []*waProto.Message{quoted, ctx.Msg.Message} {
-		m = unwrapMessage(m)
+		m = src.UnwrapMessage(m)
 		if m == nil {
 			continue
 		}
@@ -426,12 +426,12 @@ func quotedText(ctx *ContextBot) string {
 	if q == nil {
 		return ""
 	}
-	return strings.TrimSpace(src.ExtractTextMessage(unwrapMessage(q)))
+	return strings.TrimSpace(src.ExtractTextMessage(src.UnwrapMessage(q)))
 }
 
 // quotedCaption mengambil caption media pesan yang di-reply (gambar/video).
 func quotedCaption(ctx *ContextBot) string {
-	q := unwrapMessage(ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage())
+	q := src.UnwrapMessage(ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage())
 	if q == nil {
 		return ""
 	}

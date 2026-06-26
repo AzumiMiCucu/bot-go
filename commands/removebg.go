@@ -23,8 +23,8 @@ func ExecuteRemoveBg(ctx *ContextBot) error {
 	quoted := ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage()
 	var data []byte
 	var ok bool
-	if data, ok = downloadImageFrom(ctx, quoted); !ok {
-		data, ok = downloadImageFrom(ctx, ctx.Msg.Message)
+	if data, ok = src.DownloadImageFrom(ctx, quoted); !ok {
+		data, ok = src.DownloadImageFrom(ctx, ctx.Msg.Message)
 	}
 	if !ok || len(data) == 0 {
 		return ctx.Reply("❌ Kirim/Balas *gambar* (termasuk *sekali lihat*) dengan perintah *removebg*.")
@@ -41,5 +41,5 @@ func ExecuteRemoveBg(ctx *ContextBot) error {
 	}
 
 	// Hasil PNG transparan — kirim sebagai gambar PNG agar transparansi terjaga.
-	return sendImageBytes(ctx, out, "image/png", "")
+	return src.SendImageBytes(ctx, out, "image/png", "")
 }

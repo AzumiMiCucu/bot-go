@@ -328,3 +328,123 @@ func MakeSticker(data []byte, filename, author, pack string) ([]byte, string, er
 func RemoveBg(data []byte, filename string) ([]byte, string, error) {
 	return PostFileTool("/d/tools/removebg", filename, data, nil)
 }
+
+// DeepAI mengirim gambar + prompt ke /d/tools/deepai (edit gambar/stiker berbasis
+// AI). Endpoint membalas JSON {id, output_url, backend_request_id}. Mengembalikan
+// output_url (tautan gambar hasil) untuk diunduh & dikirim ulang ke WhatsApp.
+func DeepAI(data []byte, filename, prompt string) (string, error) {
+	// `text` & `prompt` dikirim keduanya agar kompatibel dengan variasi nama field.
+	body, ctype, err := PostFileTool("/d/tools/deepai", filename, data, map[string]string{
+		"text":   prompt,
+		"prompt": prompt,
+	})
+	if err != nil {
+		return "", err
+	}
+	if !strings.Contains(ctype, "json") && len(body) > 0 && body[0] != '{' {
+		return "", fmt.Errorf("respons deepai tak terduga")
+	}
+	var r struct {
+		OutputURL string `json:"output_url"`
+		Err       string `json:"err"`
+		Error     string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return "", fmt.Errorf("gagal parsing respons deepai: %w", err)
+	}
+	if r.OutputURL == "" {
+		if r.Error != "" {
+			return "", fmt.Errorf("deepai: %s", r.Error)
+		}
+		if r.Err != "" {
+			return "", fmt.Errorf("deepai: %s", r.Err)
+		}
+		return "", fmt.Errorf("deepai tidak mengembalikan output_url")
+	}
+	return r.OutputURL, nil
+}
+
+// =================================================================
+// DOWNLOADER FILE — Mediafire & Mega (mengembalikan tautan unduh langsung)
+// =================================================================
+
+// MediafireResult = hasil resolve tautan Mediafire.
+type MediafireResult struct {
+	Type      string  `json:"type"`
+	URL       string  `json:"url"`
+	Download  string  `json:"download"`
+	Title     string  `json:"title"`
+	Filename  string  `json:"filename"`
+	Filetype  string  `json:"filetype"`
+	Ext       string  `json:"ext"`
+	Uploaded  string  `json:"uploaded"`
+	FilesizeH string  `json:"filesizeH"`
+	Filesize  float64 `json:"filesize"`
+}
+
+// MediafireDL meminta tautan unduh langsung sebuah file Mediafire.
+func MediafireDL(link string) (*MediafireResult, error) {
+	endpoint := PSBaseURL + "/d/fetcher/mediafire?url=" + url.QueryEscape(link)
+	var r struct {
+		Success bool            `json:"success"`
+		Result  MediafireResult `json:"result"`
+		Error   string          `json:"error"`
+	}
+	if err := getJSON(endpoint, &r); err != nil {
+		return nil, err
+	}
+	if !r.Success || r.Result.Download == "" {
+		if r.Error != "" {
+			return nil, fmt.Errorf("mediafire: %s", r.Error)
+		}
+		return nil, fmt.Errorf("mediafire: tautan unduh tak ditemukan")
+	}
+	return &r.Result, nil
+}
+
+// MegaResult = hasil resolve tautan Mega.nz.
+type MegaResult struct {
+	FileID        string `json:"fileId"`
+	FileName      string `json:"fileName"`
+	FileSize      string `json:"fileSize"`
+	FileSizeBytes int64  `json:"fileSizeBytes"`
+	MimeType      string `json:"mimeType"`
+	DownloadURL   string `json:"downloadUrl"`
+}
+
+// MegaDL meminta tautan unduh langsung sebuah file Mega.nz.
+func MegaDL(link string) (*MegaResult, error) {
+	endpoint := PSBaseURL + "/d/fetcher/mega?url=" + url.QueryEscape(link)
+	var r struct {
+		Success bool       `json:"success"`
+		Result  MegaResult `json:"result"`
+		Error   string     `json:"error"`
+	}
+	if err := getJSON(endpoint, &r); err != nil {
+		return nil, err
+	}
+	if !r.Success || r.Result.DownloadURL == "" {
+		if r.Error != "" {
+			return nil, fmt.Errorf("mega: %s", r.Error)
+		}
+		return nil, fmt.Errorf("mega: tautan unduh tak ditemukan")
+	}
+	return &r.Result, nil
+}
+
+// getJSON adalah helper GET → unmarshal JSON ke dst (timeout panjang untuk fetcher).
+func getJSON(endpoint string, dst interface{}) error {
+	resp, err := toolHTTP.Get(endpoint)
+	if err != nil {
+		return fmt.Errorf("gagal request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("gagal membaca respons: %w", err)
+	}
+	if err := json.Unmarshal(body, dst); err != nil {
+		return fmt.Errorf("gagal parsing JSON: %w", err)
+	}
+	return nil
+}
