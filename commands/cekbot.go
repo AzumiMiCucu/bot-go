@@ -21,8 +21,8 @@ func init() {
 
 func ExecuteCekBot(ctx *ContextBot) error {
 /*	if !ctx.IsOwner {
-		return ctx.Reply("⛔ Hanya owner yang bisa menggunakan fitur ini.")*/
-	}
+		return ctx.Reply("⛔ Hanya owner yang bisa menggunakan fitur ini.")
+	}*/
 
 	// Ambil pesan yang di-reply (bila ada), jika tidak → analisis pesan ini sendiri
 	targetMsg := ctx.Msg
