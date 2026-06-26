@@ -16,12 +16,12 @@ func init() {
 		Pattern:     regexp.MustCompile(`(?i)^\s*(cekbot|isbot)\s*$`),
 		Description: "[Owner] Deteksi bot/Baileys dari pesan yang di-reply",
 		Execute:     ExecuteCekBot,
-	}).Use(OwnerOnlyMiddleware)
+	})//.Use(OwnerOnlyMiddleware)
 }
 
 func ExecuteCekBot(ctx *ContextBot) error {
-	if !ctx.IsOwner {
-		return ctx.Reply("⛔ Hanya owner yang bisa menggunakan fitur ini.")
+/*	if !ctx.IsOwner {
+		return ctx.Reply("⛔ Hanya owner yang bisa menggunakan fitur ini.")*/
 	}
 
 	// Ambil pesan yang di-reply (bila ada), jika tidak → analisis pesan ini sendiri
