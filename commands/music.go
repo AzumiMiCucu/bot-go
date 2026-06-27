@@ -58,11 +58,18 @@ type ytSearchRes struct {
 type ytMp3Res struct {
 	Success bool `json:"success"`
 	Result  struct {
-		Title       string `json:"title"`
-		Format      string `json:"format"`
-		DownloadURL string `json:"downloadURL"`
+		VideoInfo struct {
+			Title    string `json:"title"`
+			Duration int    `json:"duration"`
+		} `json:"videoInfo"`
+		// API ps.azumi.dev terbaru: tautan unduh ada di "downloadUrl"
+		// (sebelumnya "downloadURL" + "title" flat di result).
+		DownloadURL string `json:"downloadUrl"`
 	} `json:"result"`
 }
+
+// mp3Title mengambil judul dari respons ytmp3 (struktur baru: result.videoInfo.title).
+func (r ytMp3Res) mp3Title() string { return r.Result.VideoInfo.Title }
 
 // ytMusicSession menyimpan hasil pencarian untuk dipilih lewat reply.
 type ytMusicSession struct {
@@ -237,7 +244,7 @@ func playSong(ctx *ContextBot, song ytSong, useCard bool) error {
 		return ctx.Reply("❌ Gagal mengunduh audio.")
 	}
 
-	title := mp3.Result.Title
+	title := mp3.mp3Title()
 	if title == "" {
 		title = song.Name
 	}

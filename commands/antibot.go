@@ -592,9 +592,5 @@ func antibotStatus(ctx *ContextBot, groupID string) error {
 func antibotHelp() string {
 	return "📖 *Anti-Bot*\n\n" +
 		"`antibot on` / `antibot off`\n" +
-		"`antibot status` — status & info grup\n\n" +
-		"_Cara kerja:_ pesan mencurigakan (bot/Baileys, flood, teks berulang, " +
-		"tak pernah mengetik, spam command) diberi skor. Lewat ambang → *CAPTCHA*: " +
-		"jawab benar = jadi *trusted*, salah/diam = dikeluarkan.\n" +
-		"_Syarat:_ bot harus *admin* grup."
+		"`antibot status` — status & info grup\n\n"
 }

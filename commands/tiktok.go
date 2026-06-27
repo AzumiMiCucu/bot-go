@@ -129,20 +129,48 @@ func ExecuteTikTok(ctx *ContextBot) error {
 			return ctx.Reply("❌ Tidak dapat menemukan video di profil ini.")
 		}
 
-		// ── MODE DEFAULT: kirim beberapa video terbaru langsung ──
+		// ── MODE DEFAULT: kirim beberapa video terbaru sebagai SATU album ──
 		if !wantView {
 			maxSend := 4
 			if len(linkMatches) < maxSend {
 				maxSend = len(linkMatches)
 			}
+
+			// Unduh dulu semua video lalu kirim sebagai album (carousel).
+			var items []albumItem
+			firstTitle := ""
+			for i := 0; i < maxSend; i++ {
+				data, err := downloadTikTokBytes(linkMatches[i][1])
+				if err != nil || len(data) == 0 {
+					continue
+				}
+				if firstTitle == "" && i < len(titleMatches) {
+					firstTitle = stripHTML(titleMatches[i][1])
+				}
+				items = append(items, albumItem{Data: data, IsVideo: true})
+			}
+
+			caption := fmt.Sprintf("🎬 *TikTok Profil* — %d video", len(items))
+			if firstTitle != "" {
+				caption += "\n📝 " + firstTitle
+			}
+
+			// ≥2 video → album. Bila album gagal / hanya 1 video → fallback per-item.
+			if len(items) >= 2 {
+				if err := sendMediaAlbum(ctx, items, caption); err == nil {
+					_ = ctx.React("✅")
+					return nil
+				}
+			}
+
 			sent := 0
 			for i := 0; i < maxSend; i++ {
 				title := "Tanpa Judul"
 				if i < len(titleMatches) {
 					title = stripHTML(titleMatches[i][1])
 				}
-				caption := fmt.Sprintf("🎬 *Video %d/%d*\n📝 %s", i+1, maxSend, title)
-				if err := sendTikTokVideo(ctx, linkMatches[i][1], caption); err == nil {
+				cap := fmt.Sprintf("🎬 *Video %d/%d*\n📝 %s", i+1, maxSend, title)
+				if err := sendTikTokVideo(ctx, linkMatches[i][1], cap); err == nil {
 					sent++
 				}
 			}

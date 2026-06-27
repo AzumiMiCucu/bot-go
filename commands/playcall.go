@@ -245,7 +245,7 @@ func fetchSongAudio(song ytSong) ([]byte, string, error) {
 	if err != nil || len(data) == 0 {
 		return nil, "", fmt.Errorf("gagal unduh audio: %v", err)
 	}
-	title := mp3.Result.Title
+	title := mp3.mp3Title()
 	if title == "" {
 		title = song.Name
 	}

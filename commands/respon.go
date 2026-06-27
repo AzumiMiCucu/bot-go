@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"regexp"
 	"strings"
@@ -16,66 +17,31 @@ import (
 
 // =================================================================
 // AUTO-RESPON (CRUD lengkap): bot membalas otomatis suatu pesan berdasarkan
-// keyword yang di-set owner. Balasan bisa TEKS atau MEDIA (gambar/video/audio/
-// stiker). Disimpan di respon.db (lihat src/respondb.go).
+// PEMICU yang di-set owner. Pemicu bisa TEKS (keyword) atau STIKER (dicocokkan
+// via hash). Balasan bisa TEKS atau MEDIA (gambar/video/audio/stiker). Disimpan
+// di respon.db (lihat src/respondb.go).
 //
-//   respon add <keyword> [| teks]   → tambah (reply media untuk balasan media)
-//   respon edit <keyword> [| teks]  → ubah (sama seperti add, menimpa)
-//   respon del <keyword>            → hapus
-//   respon list                     → daftar semua keyword
-//   respon get <keyword>            → detail satu keyword
-//   respon help                     → bantuan
-//
-// Alias praktis: addrespon / setrespon, editrespon, delrespon/hapusrespon,
-// listrespon/responlist.
+// SATU command "respon" dengan SUB-PERINTAH (bukan banyak command terpisah):
+//   respon add <keyword> [| teks]      → tambah pemicu teks (reply media → balasan media)
+//   respon edit <keyword> [| teks]     → ubah (menimpa)
+//   respon addstiker [label] [| teks]  → pemicu STIKER (reply stiker pemicunya)
+//   respon hapus <keyword|label>       → hapus
+//   respon list                        → daftar semua
+//   respon get <keyword>               → detail
+//   respon help                        → bantuan
 //
 // Auto-respon AKTIF hanya saat bot TIDAK dalam mode self (lihat HandleAutoRespon).
 // =================================================================
 
 func init() {
+	// SATU command terdaftar dengan SUB-PERINTAH (add/edit/hapus/list/get).
 	RegisterCommand(Command{
 		Name:        "Respon",
 		Category:    "Owner",
 		Aliases:     []string{"respon", "response"},
-		Pattern:     regexp.MustCompile(`(?i)^\s*respon(?:se)?(?:\s+(.+))?\s*$`),
-		Description: "[Owner] Kelola auto-respon: add/edit/del/list/get",
+		Pattern:     regexp.MustCompile(`(?i)^\s*respon(?:se)?(?:\s+([\s\S]+))?\s*$`),
+		Description: "[Owner] Kelola auto-respon: respon add/edit/hapus/list/get",
 		Execute:     ExecuteRespon,
-	}).Use(OwnerOnlyMiddleware)
-
-	RegisterCommand(Command{
-		Name:        "Add Respon",
-		Category:    "Owner",
-		Aliases:     []string{"addrespon", "setrespon"},
-		Pattern:     regexp.MustCompile(`(?i)^\s*(?:addrespon|setrespon)(?:\s+(.+))?\s*$`),
-		Description: "[Owner] Tambah auto-respon (reply media untuk balasan media)",
-		Execute:     func(ctx *ContextBot) error { return responAdd(ctx, ctx.Args, false) },
-	}).Use(OwnerOnlyMiddleware)
-
-	RegisterCommand(Command{
-		Name:        "Edit Respon",
-		Category:    "Owner",
-		Aliases:     []string{"editrespon"},
-		Pattern:     regexp.MustCompile(`(?i)^\s*editrespon(?:\s+(.+))?\s*$`),
-		Description: "[Owner] Ubah auto-respon yang sudah ada",
-		Execute:     func(ctx *ContextBot) error { return responAdd(ctx, ctx.Args, true) },
-	}).Use(OwnerOnlyMiddleware)
-
-	RegisterCommand(Command{
-		Name:        "Del Respon",
-		Category:    "Owner",
-		Aliases:     []string{"delrespon", "hapusrespon"},
-		Pattern:     regexp.MustCompile(`(?i)^\s*(?:delrespon|hapusrespon)(?:\s+(.+))?\s*$`),
-		Description: "[Owner] Hapus auto-respon",
-		Execute:     func(ctx *ContextBot) error { return responDel(ctx, ctx.Args) },
-	}).Use(OwnerOnlyMiddleware)
-
-	RegisterCommand(Command{
-		Name:        "List Respon",
-		Category:    "Owner",
-		Aliases:     []string{"listrespon", "responlist"},
-		Pattern:     regexp.MustCompile(`(?i)^\s*(?:listrespon|responlist)\s*$`),
-		Description: "[Owner] Daftar semua auto-respon",
-		Execute:     func(ctx *ContextBot) error { return responList(ctx) },
 	}).Use(OwnerOnlyMiddleware)
 }
 
@@ -97,6 +63,9 @@ func ExecuteRespon(ctx *ContextBot) error {
 		return responAdd(ctx, rest, false)
 	case "edit", "ubah":
 		return responAdd(ctx, rest, true)
+	case "addstiker", "addsticker", "stiker", "sticker":
+		// Trigger STIKER: balas/​reply sebuah stiker lalu set balasannya.
+		return responAddSticker(ctx, rest)
 	case "del", "delete", "hapus", "rm":
 		return responDel(ctx, rest)
 	case "list", "daftar", "ls":
@@ -109,6 +78,57 @@ func ExecuteRespon(ctx *ContextBot) error {
 		// `respon <keyword>` tanpa sub → anggap minta detail keyword tsb.
 		return responGet(ctx, args)
 	}
+}
+
+// responAddSticker membuat aturan respon yang DIPICU oleh sebuah STIKER. Owner
+// me-reply stiker pemicu, lalu menentukan balasan:
+//   - teks      → `respon addstiker [label] | <teks balasan>`
+//   - media     → kirim gambar/video/audio (caption `respon addstiker [label]`) sambil reply stiker
+//
+// `label` opsional dipakai untuk menampilkan & menghapus (`respon hapus <label>`).
+func responAddSticker(ctx *ContextBot, arg string) error {
+	stk := quotedSticker(ctx)
+	if stk == nil {
+		return ctx.Reply("⚠️ Reply (balas) sebuah *stiker* lalu ketik:\n`respon addstiker [label] | <balasan>`\n\n_Atau kirim media (gambar/video) dengan caption `respon addstiker [label]` sambil mereply stikernya._")
+	}
+	if len(stk.GetFileSHA256()) == 0 {
+		return ctx.Reply("⚠️ Stiker tidak valid (hash kosong).")
+	}
+
+	label := strings.TrimSpace(arg)
+	respText := ""
+	if i := strings.Index(arg, "|"); i >= 0 {
+		label = strings.TrimSpace(arg[:i])
+		respText = strings.TrimSpace(arg[i+1:])
+	}
+
+	key := stickerKey(stk.GetFileSHA256())
+	if label == "" {
+		// Label default dari potongan hash agar tetap bisa dihapus & dikenali.
+		label = "stiker-" + strings.TrimPrefix(key, "stk:")[:6]
+	}
+
+	// Balasan MEDIA dari pesan ini sendiri (bukan dari yang di-reply = itu pemicu).
+	rtype, data, mime, _ := extractCurrentMedia(ctx)
+	if rtype != "" && len(data) > 0 {
+		if err := src.AddResponFull(key, src.TriggerSticker, label, src.MatchExact, rtype, respText, mime, data, ctx.User); err != nil {
+			return ctx.Reply("❌ Gagal menyimpan respon: " + err.Error())
+		}
+		return ctx.Reply(responStickerSavedMsg(label, rtype))
+	}
+
+	if respText == "" {
+		return ctx.Reply("⚠️ Belum ada balasan.\n\nGunakan: `respon addstiker [label] | <teks>` atau lampirkan media dengan caption `respon addstiker [label]`.")
+	}
+	if err := src.AddResponFull(key, src.TriggerSticker, label, src.MatchExact, src.ResponText, respText, "", nil, ctx.User); err != nil {
+		return ctx.Reply("❌ Gagal menyimpan respon: " + err.Error())
+	}
+	return ctx.Reply(responStickerSavedMsg(label, src.ResponText))
+}
+
+func responStickerSavedMsg(label, rtype string) string {
+	return fmt.Sprintf("✅ Respon *stiker* tersimpan.\n\n🏷️ Label : `%s`\n🧩 Balasan: %s %s\n🎯 Pemicu : kirim stiker yang sama\n\n_Hapus dengan_ `respon hapus %s`",
+		label, responTypeIcon(rtype), rtype, label)
 }
 
 // responAdd menambah / mengubah aturan respon. `arg` = "<keyword> [| teks balasan]".
@@ -137,12 +157,12 @@ func responAdd(ctx *ContextBot, arg string, isEdit bool) error {
 	}
 	keyword = strings.ToLower(strings.TrimSpace(keyword))
 	if keyword == "" {
-		return ctx.Reply("⚠️ Keyword kosong. Contoh: `addrespon halo | Halo juga!`")
+		return ctx.Reply("⚠️ Keyword kosong. Contoh: `respon add halo | Halo juga!`")
 	}
 
 	_, exists := src.GetRespon(keyword)
 	if isEdit && !exists {
-		return ctx.Reply(fmt.Sprintf("⚠️ Respon `%s` belum ada. Pakai `addrespon` untuk membuat baru.", keyword))
+		return ctx.Reply(fmt.Sprintf("⚠️ Respon `%s` belum ada. Pakai `respon add` untuk membuat baru.", keyword))
 	}
 
 	// Coba ambil media dari pesan yang di-reply (atau pesan ini sendiri).
@@ -166,7 +186,7 @@ func responAdd(ctx *ContextBot, arg string, isEdit bool) error {
 		text = quotedText(ctx)
 	}
 	if text == "" {
-		return ctx.Reply("⚠️ Tidak ada isi balasan.\n\nGunakan salah satu:\n• `addrespon <keyword> | <teks balasan>`\n• reply sebuah pesan/media lalu ketik `addrespon <keyword>`")
+		return ctx.Reply("⚠️ Tidak ada isi balasan.\n\nGunakan salah satu:\n• `respon add <keyword> | <teks balasan>`\n• reply sebuah pesan/media lalu ketik `respon add <keyword>`")
 	}
 	if err := src.AddRespon(keyword, matchType, src.ResponText, text, "", nil, ctx.User); err != nil {
 		return ctx.Reply("❌ Gagal menyimpan respon: " + err.Error())
@@ -221,7 +241,12 @@ func responList(ctx *ContextBot) error {
 		} else if r.Text != "" {
 			preview = " — 📝 " + responTruncate(oneLine(r.Text), 24)
 		}
-		sb.WriteString(fmt.Sprintf("%d. %s `%s`%s%s\n", i+1, icon, r.Keyword, mt, preview))
+		// Trigger stiker tampil pakai LABEL (keyword-nya berupa hash).
+		name := r.Keyword
+		if r.TriggerType == src.TriggerSticker {
+			name = "🔖 " + r.Label + " (stiker)"
+		}
+		sb.WriteString(fmt.Sprintf("%d. %s `%s`%s%s\n", i+1, icon, name, mt, preview))
 	}
 	sb.WriteString("\n_`~` = cocok mengandung. Detail: `respon get <keyword>`._")
 	return ctx.Reply(sb.String())
@@ -260,13 +285,16 @@ func responGet(ctx *ContextBot, arg string) error {
 }
 
 func responHelp() string {
-	return "📖 *AUTO-RESPON*\n\n" +
-		"`addrespon <keyword> | <teks>` — balasan teks\n" +
-		"reply media + `addrespon <keyword>` — balasan media\n" +
-		"`editrespon <keyword> ...` — ubah respon\n" +
-		"`delrespon <keyword>` — hapus\n" +
-		"`listrespon` — daftar semua\n" +
+	return "📖 *AUTO-RESPON* (sub-perintah `respon ...`)\n\n" +
+		"`respon add <keyword> | <teks>` — balasan teks\n" +
+		"reply media + `respon add <keyword>` — balasan media\n" +
+		"`respon edit <keyword> ...` — ubah respon\n" +
+		"`respon hapus <keyword|label>` — hapus\n" +
+		"`respon list` — daftar semua\n" +
 		"`respon get <keyword>` — detail\n\n" +
+		"🔖 *Trigger stiker* (kirim stiker → bot balas):\n" +
+		"reply stiker + `respon addstiker [label] | <balasan teks>`\n" +
+		"_atau_ kirim gambar/video (caption `respon addstiker [label]`) sambil reply stikernya.\n\n" +
 		"_Opsi:_ tambahkan `--contains` agar cocok bila pesan *mengandung* keyword " +
 		"(default: sama persis).\n" +
 		"_Catatan:_ auto-respon hanya jalan saat grup *tidak* mode self."
@@ -281,15 +309,32 @@ func HandleAutoRespon(ctx *ContextBot) bool {
 	if src.ResponCount() == 0 {
 		return false
 	}
-	text := strings.TrimSpace(ctx.TextMessage)
-	if text == "" {
-		return false
-	}
 	// Mode self (per-grup) → auto-respon dimatikan.
 	if ctx.IsGroup && src.DB.IsGroupSelf(ctx.ChatJID.ToNonAD().String()) {
 		return false
 	}
 
+	// 1) Trigger STIKER: pesan masuk berupa stiker → cocokkan via hash.
+	if stk := src.UnwrapMessage(ctx.Msg.Message).GetStickerMessage(); stk != nil {
+		if len(stk.GetFileSHA256()) == 0 {
+			return false
+		}
+		r, ok := src.MatchResponSticker(stickerKey(stk.GetFileSHA256()))
+		if !ok {
+			return false
+		}
+		if err := sendRespon(ctx, r); err != nil {
+			ctx.Print("[RESPON] gagal kirim stiker-trigger '%s': %v", r.Label, err)
+			return false
+		}
+		return true
+	}
+
+	// 2) Trigger TEKS.
+	text := strings.TrimSpace(ctx.TextMessage)
+	if text == "" {
+		return false
+	}
 	r, ok := src.MatchRespon(text)
 	if !ok {
 		return false
@@ -393,7 +438,18 @@ func sendRespon(ctx *ContextBot, r src.Respon) error {
 // ini sendiri. Mengembalikan (tipe-respon, byte, mimetype, namaFile).
 func extractResponMedia(ctx *ContextBot) (rtype string, data []byte, mime, filename string) {
 	quoted := ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage()
-	for _, m := range []*waProto.Message{quoted, ctx.Msg.Message} {
+	return extractMediaFrom(ctx, quoted, ctx.Msg.Message)
+}
+
+// extractCurrentMedia hanya melihat media pada pesan INI (bukan yang di-reply).
+// Dipakai trigger stiker: yang di-reply = pemicu, media balasan ada di pesan ini.
+func extractCurrentMedia(ctx *ContextBot) (rtype string, data []byte, mime, filename string) {
+	return extractMediaFrom(ctx, ctx.Msg.Message)
+}
+
+// extractMediaFrom mengunduh media pertama yang ditemukan dari daftar pesan (urut).
+func extractMediaFrom(ctx *ContextBot, msgs ...*waProto.Message) (rtype string, data []byte, mime, filename string) {
+	for _, m := range msgs {
 		m = src.UnwrapMessage(m)
 		if m == nil {
 			continue
@@ -418,6 +474,20 @@ func extractResponMedia(ctx *ContextBot) (rtype string, data []byte, mime, filen
 		}
 	}
 	return "", nil, "", ""
+}
+
+// quotedSticker mengembalikan StickerMessage dari pesan yang di-reply (bila ada).
+func quotedSticker(ctx *ContextBot) *waProto.StickerMessage {
+	q := src.UnwrapMessage(ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage())
+	if q == nil {
+		return nil
+	}
+	return q.GetStickerMessage()
+}
+
+// stickerKey menurunkan kunci pencocokan stabil dari hash file stiker.
+func stickerKey(sha []byte) string {
+	return "stk:" + base64.StdEncoding.EncodeToString(sha)
 }
 
 // quotedText mengambil teks dari pesan yang di-reply (bila ada).

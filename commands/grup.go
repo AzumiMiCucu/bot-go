@@ -10,6 +10,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
+	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
@@ -31,7 +32,7 @@ func init() {
 	RegisterCommand(Command{
 		Name:        "Keluarkan Member",
 		Category:    "Group",
-		Aliases:     []string{"kick", "remove","dor"},
+		Aliases:     []string{"kick", "remove", "dor"},
 		Pattern:     regexp.MustCompile(`(?i)^(?:kick|dor|remove|tendang)\s+(.+)`),
 		Description: "Mengeluarkan member massal (reply/tag, khusus admin)",
 		Execute:     ExecuteKickMember,
@@ -39,7 +40,7 @@ func init() {
 	RegisterCommand(Command{
 		Name:        "Jadikan Admin",
 		Category:    "Group",
-		Aliases:     []string{"promote","admin"},
+		Aliases:     []string{"promote", "admin"},
 		Pattern:     regexp.MustCompile(`(?i)^(?:promote|admin)\s+(.+)`),
 		Description: "Menjadikan member sebagai admin (reply/tag, khusus admin)",
 		Execute:     ExecutePromote,
@@ -148,22 +149,145 @@ func isUserAdmin(ctx *ContextBot) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("gagal ambil info grup")
 	}
+	return userIsAdminIn(ctx, groupInfo), nil
+}
 
+// userIsAdminIn memeriksa status admin pengirim memakai GroupInfo yang SUDAH diambil
+// (hindari fetch ganda). Owner bot selalu dianggap admin.
+func userIsAdminIn(ctx *ContextBot, gi *types.GroupInfo) bool {
+	if ctx.IsOwner {
+		return true
+	}
 	senderUser := ctx.Msg.Info.Sender.ToNonAD().User
 	senderLID := ctx.Msg.Info.MessageSource.SenderAlt.ToNonAD().User
-
-	for _, p := range groupInfo.Participants {
+	for _, p := range gi.Participants {
 		partUser := p.JID.ToNonAD().User
 		partLID := p.LID.ToNonAD().User
-
-		if (partUser != "" && partUser == senderUser) ||
-			(partLID != "" && partLID == senderLID) ||
-			(partUser != "" && partUser == senderLID) ||
-			(partLID != "" && partLID == senderUser) {
-			return p.IsAdmin || p.IsSuperAdmin, nil
+		if (partUser != "" && (partUser == senderUser || partUser == senderLID)) ||
+			(partLID != "" && (partLID == senderLID || partLID == senderUser)) {
+			return p.IsAdmin || p.IsSuperAdmin
 		}
 	}
-	return false, nil
+	return false
+}
+
+// botAdminStatus mengembalikan (ketemu, apakahAdmin) untuk akun BOT di grup.
+// "ketemu" false bila partisipan bot tak terdeteksi (mis. grup LID) — pemanggil
+// sebaiknya TIDAK memblokir aksi pada kasus ini, biar server WA yang menentukan.
+func botAdminStatus(ctx *ContextBot, gi *types.GroupInfo) (found, admin bool) {
+	if ctx.Client.Store.ID == nil {
+		return false, false
+	}
+	botUser := ctx.Client.Store.ID.ToNonAD().User
+	botLID := ctx.Client.Store.LID.ToNonAD().User
+	for _, p := range gi.Participants {
+		if (botUser != "" && p.JID.ToNonAD().User == botUser) ||
+			(botLID != "" && p.LID.ToNonAD().User == botLID) {
+			return true, p.IsAdmin || p.IsSuperAdmin
+		}
+	}
+	return false, false
+}
+
+// resolveTargets memetakan tiap target ke JID partisipan yang SEBENARNYA di grup
+// (mis. dari mention @lid → nomor telepon), sehingga UpdateGroupParticipants tak
+// gagal diam-diam. Target yang tak ditemukan (mis. calon member baru) dibiarkan apa adanya.
+func resolveTargets(gi *types.GroupInfo, targets []types.JID) []types.JID {
+	out := make([]types.JID, 0, len(targets))
+	for _, t := range targets {
+		tu := t.ToNonAD().User
+		var matched types.JID
+		for _, p := range gi.Participants {
+			if (p.JID.ToNonAD().User != "" && p.JID.ToNonAD().User == tu) ||
+				(p.LID.ToNonAD().User != "" && p.LID.ToNonAD().User == tu) {
+				matched = p.JID.ToNonAD()
+				break
+			}
+		}
+		if matched.User != "" {
+			out = append(out, matched)
+		} else {
+			out = append(out, t.ToNonAD())
+		}
+	}
+	return out
+}
+
+// participantActionReport merangkum hasil per-anggota dari UpdateGroupParticipants
+// menjadi (jumlah sukses, baris laporan). Mengubah kode error WA jadi keterangan.
+func participantActionReport(resp []types.GroupParticipant) (okCount int, lines []string) {
+	for _, r := range resp {
+		switch r.Error {
+		case 0:
+			okCount++
+			lines = append(lines, "✅ +"+r.JID.User)
+		case 403:
+			lines = append(lines, "⛔ +"+r.JID.User+" (privasi/izin ketat)")
+		case 404, 408:
+			lines = append(lines, "⚠️ +"+r.JID.User+" (tidak valid / tak di grup)")
+		case 406:
+			lines = append(lines, "🚫 +"+r.JID.User+" (tak bisa diproses, mungkin pembuat grup)")
+		case 409:
+			lines = append(lines, "ℹ️ +"+r.JID.User+" (status sudah sesuai)")
+		default:
+			lines = append(lines, fmt.Sprintf("❓ +%s (kode %d)", r.JID.User, r.Error))
+		}
+	}
+	return okCount, lines
+}
+
+// runMemberAction menjalankan aksi keanggotaan (remove/promote/demote) dengan
+// pemeriksaan lengkap: validasi grup → admin pengirim → bot harus admin →
+// resolusi target (LID) → laporan hasil per-anggota. Khusus "remove" melindungi
+// bot agar tak menendang dirinya sendiri.
+func runMemberAction(ctx *ContextBot, action whatsmeow.ParticipantChange, okTitle string) error {
+	if !isGroupValid(ctx) {
+		return nil
+	}
+	gi, err := ctx.Client.GetGroupInfo(context.Background(), ctx.ChatJID)
+	if err != nil {
+		return ctx.Reply("❌ Gagal mengambil info grup.")
+	}
+	if !userIsAdminIn(ctx, gi) {
+		return nil // pengirim bukan admin → diam (hindari spam)
+	}
+	if found, admin := botAdminStatus(ctx, gi); found && !admin {
+		return ctx.Reply("⚠️ Bot harus menjadi *admin* dulu untuk menjalankan perintah ini.")
+	}
+
+	targets, err := getTargetJIDs(ctx)
+	if err != nil {
+		return ctx.Reply(err.Error())
+	}
+	targets = resolveTargets(gi, targets)
+
+	if action == whatsmeow.ParticipantChangeRemove {
+		var safe []types.JID
+		botUser := ""
+		if ctx.Client.Store.ID != nil {
+			botUser = ctx.Client.Store.ID.ToNonAD().User
+		}
+		for _, j := range targets {
+			if j.User != botUser {
+				safe = append(safe, j)
+			}
+		}
+		if len(safe) == 0 {
+			return ctx.Reply("😅 Bot tidak bisa mengeluarkan dirinya sendiri.")
+		}
+		targets = safe
+	}
+
+	_ = ctx.React("⏳")
+	resp, err := ctx.Client.UpdateGroupParticipants(context.Background(), ctx.ChatJID, targets, action)
+	if err != nil {
+		_ = ctx.React("❌")
+		return ctx.Reply("❌ Gagal memproses. (Pastikan bot adalah Admin)\n_" + err.Error() + "_")
+	}
+
+	okCount, lines := participantActionReport(resp)
+	_ = ctx.React("✅")
+	return ctx.Reply(fmt.Sprintf("%s — *%d/%d berhasil*\n\n%s", okTitle, okCount, len(resp), strings.Join(lines, "\n")))
 }
 
 // Middleware Utama
@@ -184,7 +308,6 @@ func guardAdminAccess(ctx *ContextBot) bool {
 func getTargetJIDs(ctx *ContextBot) ([]types.JID, error) {
 	var jids []types.JID
 	seen := make(map[string]bool)
-	
 
 	if ext := ctx.Msg.Message.GetExtendedTextMessage(); ext != nil {
 		if ctxInfo := ext.GetContextInfo(); ctxInfo != nil {
@@ -294,66 +417,15 @@ func ExecuteAddMember(ctx *ContextBot) error {
 }
 
 func ExecuteKickMember(ctx *ContextBot) error {
-	if !guardAdminAccess(ctx) {
-		return nil
-	}
-
-	targetJIDs, err := getTargetJIDs(ctx)
-	if err != nil {
-		return ctx.Reply(err.Error())
-	}
-
-	var safeJIDs []types.JID
-	for _, jid := range targetJIDs {
-		if jid.User != ctx.Client.Store.ID.User {
-			safeJIDs = append(safeJIDs, jid)
-		}
-	}
-
-	if len(safeJIDs) == 0 {
-		return ctx.Reply("😅 Anda tidak bisa mengeluarkan bot menggunakan perintah ini.")
-	}
-
-	_, err = ctx.Client.UpdateGroupParticipants(context.Background(), ctx.ChatJID, safeJIDs, "remove")
-	if err != nil {
-		return ctx.Reply("❌ Gagal menendang member. (Pastikan bot adalah Admin)")
-	}
-
-	return ctx.Reply(fmt.Sprintf("🧹 *Berhasil menyapu %d member dari grup!*", len(safeJIDs)))
+	return runMemberAction(ctx, whatsmeow.ParticipantChangeRemove, "🧹 *Keluarkan Member*")
 }
 
 func ExecutePromote(ctx *ContextBot) error {
-	if !guardAdminAccess(ctx) {
-		return nil
-	}
-
-	targetJIDs, err := getTargetJIDs(ctx)
-	if err != nil {
-		return ctx.Reply(err.Error())
-	}
-
-	_, err = ctx.Client.UpdateGroupParticipants(context.Background(), ctx.ChatJID, targetJIDs, "promote")
-	if err != nil {
-		return ctx.Reply("❌ Gagal menaikkan jabatan. (Pastikan bot adalah Admin)")
-	}
-	return ctx.Reply(fmt.Sprintf("👑 *%d member telah diangkat menjadi Admin!*", len(targetJIDs)))
+	return runMemberAction(ctx, whatsmeow.ParticipantChangePromote, "👑 *Jadikan Admin*")
 }
 
 func ExecuteDemote(ctx *ContextBot) error {
-	if !guardAdminAccess(ctx) {
-		return nil
-	}
-
-	targetJIDs, err := getTargetJIDs(ctx)
-	if err != nil {
-		return ctx.Reply(err.Error())
-	}
-
-	_, err = ctx.Client.UpdateGroupParticipants(context.Background(), ctx.ChatJID, targetJIDs, "demote")
-	if err != nil {
-		return ctx.Reply("❌ Gagal menurunkan jabatan. (Pastikan bot adalah Admin)")
-	}
-	return ctx.Reply(fmt.Sprintf("📉 *%d admin telah diturunkan menjadi member biasa.*", len(targetJIDs)))
+	return runMemberAction(ctx, whatsmeow.ParticipantChangeDemote, "📉 *Copot Admin*")
 }
 
 // =============================================
@@ -372,7 +444,13 @@ func ExecuteHidetag(ctx *ContextBot) error {
 
 	var mentions []string
 	for _, p := range groupInfo.Participants {
-		mentions = append(mentions, p.JID.String())
+		// Grup LID: sebagian partisipan hanya punya LID (JID kosong) → pakai LID
+		// agar mention tidak rusak.
+		if p.JID.User != "" {
+			mentions = append(mentions, p.JID.String())
+		} else if p.LID.User != "" {
+			mentions = append(mentions, p.LID.String())
+		}
 	}
 
 	teks := strings.TrimSpace(ctx.Args)
@@ -441,11 +519,11 @@ func ExecuteSetGroupName(ctx *ContextBot) error {
 	text := strings.TrimSpace(ctx.TextMessage)
 	re := regexp.MustCompile(`(?i)^(?:namagrup|setname)\s+(.+)`)
 	matches := re.FindStringSubmatch(text)
-	
+
 	if len(matches) < 2 {
 		return ctx.Reply("❌ Format salah.\nContoh: *namagrup Komunitas Keren*")
 	}
-	
+
 	newName := strings.TrimSpace(matches[1])
 
 	if len(newName) > 100 {
@@ -467,11 +545,11 @@ func ExecuteSetGroupDesc(ctx *ContextBot) error {
 	text := strings.TrimSpace(ctx.TextMessage)
 	re := regexp.MustCompile(`(?i)^(?:deskripsi|setdesc)\s+([\s\S]+)`)
 	matches := re.FindStringSubmatch(text)
-	
+
 	if len(matches) < 2 {
 		return ctx.Reply("❌ Deskripsi tidak boleh kosong.\nContoh: *setdesc Grup khusus obrolan IT.*")
 	}
-	
+
 	newDesc := strings.TrimSpace(matches[1])
 
 	err := ctx.Client.SetGroupDescription(context.Background(), ctx.ChatJID, newDesc)
@@ -486,18 +564,18 @@ func ExecuteSetGroupPhoto(ctx *ContextBot) error {
 		return nil
 	}
 
-	imgBuffer, err := getGroupImageBuffer(ctx) 
+	imgBuffer, err := getGroupImageBuffer(ctx)
 	if err != nil || len(imgBuffer) == 0 {
 		return ctx.Reply("❌ *Cara pakai:*\n\nKirim gambar atau reply gambar dengan caption *fotogrup*.")
 	}
 
 	pictureID, err := ctx.Client.SetGroupPhoto(context.Background(), ctx.ChatJID, imgBuffer)
-	
+
 	if err != nil {
 		fmt.Printf("[DEBUG] Error SetGroupPhoto: %v\n", err)
 		return ctx.Reply(fmt.Sprintf("❌ Gagal ganti foto grup: %s\n\n_Pastikan format file mendukung (JPG/PNG)._", err.Error()))
 	}
-	
+
 	return ctx.Reply(fmt.Sprintf("🖼️ Foto profil grup berhasil diperbarui! (ID: %s)", pictureID))
 }
 
@@ -551,10 +629,10 @@ func ExecuteGroupInfo(ctx *ContextBot) error {
 	}
 
 	createdAt := groupInfo.GroupCreated.Format("02 Jan 2006, 15:04 WIB")
-	
+
 	// FIX: Mengambil nilai "User" dari Struct OwnerPN yang bertipe JID
-	creatorJid := groupInfo.OwnerPN.User 
-	
+	creatorJid := groupInfo.OwnerPN.User
+
 	// Fallback jika OwnerPN kosong, ambil dari OwnerJID
 	if creatorJid == "" {
 		creatorJid = groupInfo.OwnerJID.User

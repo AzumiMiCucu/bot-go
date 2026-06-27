@@ -39,16 +39,24 @@ const (
 // ResponMaxMediaBytes membatasi ukuran media yang boleh disimpan (hindari DB membengkak).
 const ResponMaxMediaBytes = 30 * 1024 * 1024 // 30 MB
 
+// Tipe PEMICU (trigger): teks biasa, atau sebuah STIKER (dicocokkan via hash).
+const (
+	TriggerText    = "text"
+	TriggerSticker = "sticker"
+)
+
 // Respon = satu aturan auto-respon (tanpa byte media — itu diambil terpisah).
 type Respon struct {
-	Keyword   string
-	MatchType string
-	Type      string // text|image|video|audio|sticker
-	Text      string // isi teks / caption media
-	Mimetype  string
-	HasMedia  bool
-	CreatedBy string
-	CreatedAt int64
+	Keyword     string // KUNCI cocok: teks (lower) untuk trigger teks, atau "stk:<hash>" untuk stiker
+	TriggerType string // text|sticker
+	Label       string // nama ramah (utama untuk trigger stiker; teks pakai keyword)
+	MatchType   string
+	Type        string // text|image|video|audio|sticker (tipe BALASAN)
+	Text        string // isi teks / caption media
+	Mimetype    string
+	HasMedia    bool
+	CreatedBy   string
+	CreatedAt   int64
 }
 
 var (
@@ -71,18 +79,23 @@ func InitResponDB() error {
 
 	schema := `
 	CREATE TABLE IF NOT EXISTS responses (
-		keyword     TEXT PRIMARY KEY,   -- selalu lowercase
-		match_type  TEXT DEFAULT 'exact',
-		resp_type   TEXT DEFAULT 'text',
-		text        TEXT DEFAULT '',
-		media       BLOB,
-		mimetype    TEXT DEFAULT '',
-		created_by  TEXT DEFAULT '',
-		created_at  INTEGER DEFAULT 0
+		keyword      TEXT PRIMARY KEY,   -- teks lowercase, atau "stk:<hash>" utk stiker
+		match_type   TEXT DEFAULT 'exact',
+		resp_type    TEXT DEFAULT 'text',
+		text         TEXT DEFAULT '',
+		media        BLOB,
+		mimetype     TEXT DEFAULT '',
+		trigger_type TEXT DEFAULT 'text',
+		label        TEXT DEFAULT '',
+		created_by   TEXT DEFAULT '',
+		created_at   INTEGER DEFAULT 0
 	);`
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("buat tabel respon.db: %w", err)
 	}
+	// Migrasi idempotent utk DB lama (sebelum kolom trigger_type & label ada).
+	db.Exec("ALTER TABLE responses ADD COLUMN trigger_type TEXT DEFAULT 'text'")
+	db.Exec("ALTER TABLE responses ADD COLUMN label TEXT DEFAULT ''")
 	responDB = db
 	reloadResponCache()
 	fmt.Printf("[DB] respon.db (auto-respon) berhasil diinisialisasi — %d keyword dimuat\n", len(responCache))
@@ -95,6 +108,7 @@ func reloadResponCache() {
 		return
 	}
 	rows, err := responDB.Query(`SELECT keyword, match_type, resp_type, text, mimetype,
+		COALESCE(trigger_type,'text'), COALESCE(label,''),
 		(media IS NOT NULL AND length(media) > 0), created_by, created_at FROM responses`)
 	if err != nil {
 		return
@@ -105,7 +119,10 @@ func reloadResponCache() {
 	for rows.Next() {
 		var r Respon
 		if err := rows.Scan(&r.Keyword, &r.MatchType, &r.Type, &r.Text, &r.Mimetype,
-			&r.HasMedia, &r.CreatedBy, &r.CreatedAt); err == nil {
+			&r.TriggerType, &r.Label, &r.HasMedia, &r.CreatedBy, &r.CreatedAt); err == nil {
+			if r.TriggerType == "" {
+				r.TriggerType = TriggerText
+			}
 			next[r.Keyword] = r
 		}
 	}
@@ -114,13 +131,20 @@ func reloadResponCache() {
 	responMu.Unlock()
 }
 
-// AddRespon menyimpan / menimpa (upsert) sebuah aturan respon. media boleh nil
-// (balasan teks). keyword di-normalkan ke lowercase + trim.
+// AddRespon menyimpan / menimpa (upsert) sebuah aturan respon TEKS-trigger. media
+// boleh nil (balasan teks). keyword di-normalkan ke lowercase + trim.
 func AddRespon(keyword, matchType, respType, text, mimetype string, media []byte, createdBy string) error {
+	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	return AddResponFull(keyword, TriggerText, keyword, matchType, respType, text, mimetype, media, createdBy)
+}
+
+// AddResponFull adalah bentuk lengkap upsert: mendukung trigger TEKS maupun STIKER.
+// Untuk trigger stiker, `keyword` = "stk:<hash>" dan `label` = nama ramah.
+func AddResponFull(keyword, triggerType, label, matchType, respType, text, mimetype string, media []byte, createdBy string) error {
 	if responDB == nil {
 		return fmt.Errorf("respon.db belum diinisialisasi")
 	}
-	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	keyword = strings.TrimSpace(keyword)
 	if keyword == "" {
 		return fmt.Errorf("keyword kosong")
 	}
@@ -130,18 +154,22 @@ func AddRespon(keyword, matchType, respType, text, mimetype string, media []byte
 	if matchType != MatchContains {
 		matchType = MatchExact
 	}
+	if triggerType != TriggerSticker {
+		triggerType = TriggerText
+	}
 	var blob interface{}
 	if len(media) > 0 {
 		blob = media
 	}
 	_, err := responDB.Exec(`INSERT INTO responses
-		(keyword, match_type, resp_type, text, media, mimetype, created_by, created_at)
-		VALUES (?,?,?,?,?,?,?,?)
+		(keyword, match_type, resp_type, text, media, mimetype, trigger_type, label, created_by, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(keyword) DO UPDATE SET
 			match_type=excluded.match_type, resp_type=excluded.resp_type,
 			text=excluded.text, media=excluded.media, mimetype=excluded.mimetype,
+			trigger_type=excluded.trigger_type, label=excluded.label,
 			created_by=excluded.created_by, created_at=excluded.created_at`,
-		keyword, matchType, respType, text, blob, mimetype, createdBy, time.Now().Unix())
+		keyword, matchType, respType, text, blob, mimetype, triggerType, label, createdBy, time.Now().Unix())
 	if err != nil {
 		return err
 	}
@@ -149,13 +177,39 @@ func AddRespon(keyword, matchType, respType, text, mimetype string, media []byte
 	return nil
 }
 
-// DelRespon menghapus aturan respon. Mengembalikan true bila ada yang terhapus.
-func DelRespon(keyword string) (bool, error) {
+// DelRespon menghapus aturan respon berdasarkan keyword teks ATAU label (untuk
+// trigger stiker yang keyword-nya berupa hash). Mengembalikan true bila terhapus.
+func DelRespon(arg string) (bool, error) {
 	if responDB == nil {
 		return false, fmt.Errorf("respon.db belum diinisialisasi")
 	}
-	keyword = strings.ToLower(strings.TrimSpace(keyword))
-	res, err := responDB.Exec("DELETE FROM responses WHERE keyword = ?", keyword)
+	arg = strings.TrimSpace(arg)
+	key := strings.ToLower(arg)
+
+	// 1) coba sebagai keyword langsung.
+	res, err := responDB.Exec("DELETE FROM responses WHERE keyword = ?", key)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		reloadResponCache()
+		return true, nil
+	}
+
+	// 2) coba cocokkan via LABEL (case-insensitive) — utama untuk trigger stiker.
+	responMu.RLock()
+	var target string
+	for _, r := range responCache {
+		if r.Label != "" && strings.EqualFold(r.Label, arg) {
+			target = r.Keyword
+			break
+		}
+	}
+	responMu.RUnlock()
+	if target == "" {
+		return false, nil
+	}
+	res, err = responDB.Exec("DELETE FROM responses WHERE keyword = ?", target)
 	if err != nil {
 		return false, err
 	}
@@ -218,15 +272,30 @@ func MatchRespon(text string) (Respon, bool) {
 	responMu.RLock()
 	defer responMu.RUnlock()
 
-	// 1) exact — langsung lookup map.
-	if r, ok := responCache[t]; ok && r.MatchType == MatchExact {
+	// 1) exact — langsung lookup map (abaikan trigger non-teks).
+	if r, ok := responCache[t]; ok && r.TriggerType == TriggerText && r.MatchType == MatchExact {
 		return r, true
 	}
-	// 2) contains — iterasi keyword bertipe contains.
+	// 2) contains — iterasi keyword teks bertipe contains.
 	for _, r := range responCache {
-		if r.MatchType == MatchContains && r.Keyword != "" && strings.Contains(t, r.Keyword) {
+		if r.TriggerType == TriggerText && r.MatchType == MatchContains &&
+			r.Keyword != "" && strings.Contains(t, r.Keyword) {
 			return r, true
 		}
+	}
+	return Respon{}, false
+}
+
+// MatchResponSticker mencari aturan respon yang dipicu sebuah STIKER (via key
+// "stk:<hash>"). Mengembalikan (respon, true) bila ada.
+func MatchResponSticker(key string) (Respon, bool) {
+	if key == "" {
+		return Respon{}, false
+	}
+	responMu.RLock()
+	defer responMu.RUnlock()
+	if r, ok := responCache[key]; ok && r.TriggerType == TriggerSticker {
+		return r, true
 	}
 	return Respon{}, false
 }
