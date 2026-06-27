@@ -331,10 +331,17 @@ func HandleAntibot(ctx *ContextBot) bool {
 
 	// DEBUG: tampilkan verdict, engine checks (TK/DV/PF/ID) & skor tiap pesan di
 	// grup ber-antibot (untuk tuning). Engine checks ikut dihitung di DetectBot.
+	// SIDIK JARI STRUKTURAL ikut dicetak (fase DUMP): bandingkan baris bot vs HP asli
+	// untuk menemukan pembeda struktural sebelum aturan vonis dibuat — scoring di sini
+	// SENGAJA belum memakai struktur agar tak menambah false-positive.
+	sf := det.Struct
 	fmt.Printf("[ANTIBOT] grup=%s pengirim=%s id=%q dev=%s deviceIdx=%d(companion) verdict=%s(baileysScore=%d) engine=[TK:%s DV:%s PF:%s ID:%s] useDevice=%v skor=%d/%d alasan=%v presence=%v\n",
 		groupID, su, string(ctx.Msg.Info.ID), dev, det.DeviceID, det.Verdict, det.BaileysScore,
 		det.TKCheck, det.DVCheck, det.PFCheck, det.IDCheck, det.IsUseDevice,
 		score, antibotThreshold, reasons, presenceActive())
+	fmt.Printf("[ANTIBOT-STRUCT] id=%q konten=%s wrap=%v MCI=%v ctx=%v unk[top:%t mci:%t ctx:%t] notes=%v\n",
+		string(ctx.Msg.Info.ID), sf.ContentType, sf.Wrappers, sf.MCIFields, sf.CtxFields,
+		sf.UnknownTop != "", sf.UnknownMCI != "", sf.UnknownCtx != "", sf.Notes)
 
 	if score < antibotThreshold {
 		return false

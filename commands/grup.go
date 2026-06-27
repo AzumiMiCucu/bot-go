@@ -266,9 +266,10 @@ func ExecuteAddMember(ctx *ContextBot) error {
 		return ctx.Reply(err.Error())
 	}
 
-	ctx.Reply("⏳ Sedang memproses...")
+	_ = ctx.React("⏳")
 	resp, err := ctx.Client.UpdateGroupParticipants(context.Background(), ctx.ChatJID, targetJIDs, "add")
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Terjadi kesalahan server. (Pastikan bot adalah Admin)")
 	}
 
@@ -288,6 +289,7 @@ func ExecuteAddMember(ctx *ContextBot) error {
 		}
 	}
 
+	_ = ctx.React("✅")
 	return ctx.Reply(fmt.Sprintf("📊 *Laporan Tambah Member:*\n\n%s", strings.Join(report, "\n")))
 }
 

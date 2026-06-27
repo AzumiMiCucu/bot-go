@@ -88,7 +88,7 @@ func init() {
 func ExecuteKompasSearch(ctx *ContextBot) error {
 	query := strings.TrimSpace(ctx.Args)
 
-	_ = ctx.Reply("⏳ Memuat berita...")
+	_ = ctx.React("⏳")
 
 	newSession := &KompasSessionData{
 		State: "list",
@@ -101,6 +101,7 @@ func ExecuteKompasSearch(ctx *ContextBot) error {
 		apiUrl := "https://ps.azumi.dev/d/other/kompas"
 		resp, err := httpClient.Get(apiUrl)
 		if err != nil {
+			_ = ctx.React("❌")
 			return ctx.Reply("❌ Gagal terhubung ke API Kompas.")
 		}
 		defer resp.Body.Close()
@@ -108,6 +109,7 @@ func ExecuteKompasSearch(ctx *ContextBot) error {
 		body, _ := io.ReadAll(resp.Body)
 		var data KompasTrendingRes
 		if err := json.Unmarshal(body, &data); err != nil || !data.Success || len(data.Result) == 0 {
+			_ = ctx.React("❌")
 			return ctx.Reply("❌ Tidak ada berita terkini yang ditemukan.")
 		}
 
@@ -126,6 +128,7 @@ func ExecuteKompasSearch(ctx *ContextBot) error {
 		apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/finder/kompas?q=%s", url.QueryEscape(query))
 		resp, err := httpClient.Get(apiUrl)
 		if err != nil {
+			_ = ctx.React("❌")
 			return ctx.Reply("❌ Gagal terhubung ke API Kompas.")
 		}
 		defer resp.Body.Close()
@@ -133,6 +136,7 @@ func ExecuteKompasSearch(ctx *ContextBot) error {
 		body, _ := io.ReadAll(resp.Body)
 		var data KompasSearchRes
 		if err := json.Unmarshal(body, &data); err != nil || !data.Success || len(data.Result) == 0 {
+			_ = ctx.React("❌")
 			return ctx.Reply(fmt.Sprintf("❌ Tidak ditemukan berita untuk: %s", query))
 		}
 
@@ -153,6 +157,9 @@ func ExecuteKompasSearch(ctx *ContextBot) error {
 	msgID, err := ctx.ReplyWithID(sb.String())
 	if err == nil {
 		replyRouter.Register(msgID, "kompas", newSession)
+		_ = ctx.React("✅")
+	} else {
+		_ = ctx.React("❌")
 	}
 	return err
 }

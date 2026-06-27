@@ -19,6 +19,10 @@ import (
 // debugLogMessages mengaktifkan dump JSON penuh tiap pesan (berat). Matikan di produksi.
 const debugLogMessages = false
 
+// reMention dipakai di SETIAP balasan untuk mendeteksi @angka. Dikompilasi SEKALI
+// (package-level) — bukan tiap panggilan — agar jalur balas tetap secepat mungkin.
+var reMention = regexp.MustCompile(`@(\d+)`)
+
 func hasMediaContent(msg *waProto.Message) string {
 	if msg == nil {
 		return ""
@@ -51,8 +55,7 @@ func sendReply(client *whatsmeow.Client, chatJID types.JID, evt *events.Message,
 
 	// Otomatis deteksi @angka dan masukkan ke array JID
 	var mentionedJIDs []string
-	mentionRegex := regexp.MustCompile(`@(\d+)`)
-	matches := mentionRegex.FindAllStringSubmatch(cleanText, -1)
+	matches := reMention.FindAllStringSubmatch(cleanText, -1)
 	for _, match := range matches {
 		if len(match) > 1 {
 			mentionedJIDs = append(mentionedJIDs, match[1]+"@lid")
@@ -103,20 +106,30 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 	textMessage := src.ExtractTextMessage(evt.Message)
 	mediaType := hasMediaContent(evt.Message)
 
-	// Tangkap sinyal deteksi raw pesan ini (async, tidak menambah latensi respon).
-	// Dipakai cekbot saat seseorang me-reply pesan ini: metadata raw (MessageSecret,
-	// DeviceListMetadata, BotMetadata) hanya ada live, hilang di salinan quote.
-	// Sekaligus log ringkasan ke msg.db untuk histori/statistik (bounded & async).
+	// Logging + bookkeeping BERAT dijalankan ASINKRON — lepas TOTAL dari jalur respons:
+	//   • src.Print (tulis stdout) tak lagi menyentuh hot-path → tak ada serialisasi
+	//     antar-goroutine pesan di bawah beban.
+	//   • DetectBot (analisis struktural + node) HANYA untuk GRUP — di situlah antibot
+	//     & reputasi bot dipakai. Chat pribadi melewatinya demi respons paling cepat
+	//     (cekbot di japri otomatis fallback ke analisis quote). Metadata raw (Message
+	//     Secret/DeviceListMetadata) hanya hidup live → ditangkap di sini untuk cekbot.
 	go func() {
-		det := src.DetectBot(evt)
-		src.CaptureDetection(det)
-		src.StoreLiveMessage(det, evt.Info.Chat.ToNonAD().String(), textMessage, evt.Info.IsGroup, mediaType != "", evt.Info.Timestamp)
+		src.Print("%s from %s", textMessage, evt.Info.Sender)
+		if debugLogMessages {
+			src.Print(evt.Message)
+		}
+		if evt.Info.IsGroup {
+			det := src.DetectBot(evt)
+			src.CaptureDetection(det)
+			// Reputasi bot per-akun ditulis SEKALI per pesan (hanya di sini) agar
+			// hitungan rnqt tak ganda — antibot juga memanggil DetectBot (READ saja).
+			src.CaptureReputation(det)
+			src.StoreLiveMessage(det, evt.Info.Chat.ToNonAD().String(), textMessage, true, mediaType != "", evt.Info.Timestamp)
+		}
 	}()
 
-	src.Print("%s from %s", textMessage, evt.Info.Sender)
-	if debugLogMessages {
-		src.Print(evt.Message)
-	}
+	// Catat chat untuk auto-clear berkala (hapus dari tampilan akun bot tiap N menit).
+	src.RecordChat(evt.Info.Chat, evt.Info.Sender, evt.Info.ID, evt.Info.IsFromMe, evt.Info.Timestamp)
 
 	chatJID := evt.Info.Chat
 	senderJID := evt.Info.Sender

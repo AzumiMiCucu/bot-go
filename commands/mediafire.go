@@ -16,7 +16,7 @@ func init() {
 	RegisterCommand(Command{
 		Name:        "MediaFire Downloader",
 		Category:    "Downloader",
-		Aliases:     []string{"mediafiredl", "mediafire", "mfdl"},
+		Aliases:     []string{"mediafire", "mfdl"},
 		Pattern:     regexp.MustCompile(`(?i)^(?:mediafiredl|mediafire|mfdl)\s+(.+)`),
 		Description: "Unduh file dari MediaFire",
 		Execute:     ExecuteMediafire,

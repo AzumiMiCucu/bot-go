@@ -27,19 +27,26 @@ func ExecuteRemoveBg(ctx *ContextBot) error {
 		data, ok = src.DownloadImageFrom(ctx, ctx.Msg.Message)
 	}
 	if !ok || len(data) == 0 {
-		return ctx.Reply("❌ Kirim/Balas *gambar* (termasuk *sekali lihat*) dengan perintah *removebg*.")
+		return ctx.Reply("⚠️ Kirim/Balas *gambar* (termasuk *sekali lihat*) dengan perintah *removebg*.")
 	}
 
-	ctx.Reply("⏳ Menghapus latar belakang...")
+	_ = ctx.React("⏳")
 
 	out, ctype, err := src.RemoveBg(data, "image.jpg")
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal menghapus latar belakang.")
 	}
 	if len(out) == 0 || strings.Contains(ctype, "application/json") {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ API removebg mengembalikan hasil tak valid.")
 	}
 
 	// Hasil PNG transparan — kirim sebagai gambar PNG agar transparansi terjaga.
-	return src.SendImageBytes(ctx, out, "image/png", "")
+	if err := src.SendImageBytes(ctx, out, "image/png", ""); err != nil {
+		_ = ctx.React("❌")
+		return err
+	}
+	_ = ctx.React("✅")
+	return nil
 }

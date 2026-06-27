@@ -104,6 +104,20 @@ type BotDetectionResult struct {
 	// Kesimpulan akhir (lihat konstanta Verdict*)
 	Verdict       string // human / bot / baileys / suspect / unknown
 	VerdictReason string // alasan singkat verdict (untuk tampilan & log)
+
+	// DefinitiveBot true bila verdict bot/baileys berasal dari sinyal DEFINITIF
+	// (server-bot / BAE* / HOSTED / interaktif / android-reply-tanpa-quotedType /
+	// reputasi akun) — BUKAN dari fallback lemah "format ID tak dikenal". Hanya yang
+	// definitif yang boleh MENANDAI reputasi akun (lihat botrep.go) agar tak meracuni.
+	DefinitiveBot bool
+
+	// Sidik jari STRUKTURAL (level protobuf) — lihat structdump.go. Dipakai cekbot,
+	// command `struktur`, dan log antibot untuk membandingkan bot vs HP asli.
+	Struct StructReport
+
+	// Sidik jari NODE XMPP MENTAH (<message ...> + child & atribut) — lihat rawnode.go.
+	// Ditangkap dari logger "Recv" saat pesan tiba live; hilang pada jalur quote.
+	RawNode RawNodeReport
 }
 
 // DetectBot menganalisis pesan dari semua sudut untuk mendeteksi bot/Baileys.
@@ -217,8 +231,32 @@ func DetectBot(evt *events.Message) BotDetectionResult {
 		r.EditType = string(evt.Info.Edit)
 	}
 
-	// ── 9. Kesimpulan akhir ──
+	// ── 9. Sidik jari struktural (protobuf mentah, sebelum unwrap) ──
+	r.Struct = AnalyzeStructure(evt.RawMessage)
+
+	// ── 9b. Sidik jari node XMPP mentah (ditangkap live dari logger "Recv") ──
+	// Recv-goroutine menyimpan node SEBELUM event di-dispatch ke handler ini, jadi
+	// saat DetectBot berjalan node mestinya sudah ada di cache (dikunci message-ID).
+	if rn, ok := LookupRawNode(r.MessageID); ok {
+		r.RawNode = rn
+		// Sinyal node yang AMAN dipakai (hindari false-positive — lihat filosofi
+		// structdump.go): kehadiran child <biz>/<verified_name> = akun business,
+		// child <bot> = thread bot. Hanya menguatkan flag yang sudah ada; aturan
+		// vonis baru berbasis node menanti kalibrasi dari dump nyata (cmd struktur).
+		if rn.Has("biz") || rn.Has("verified_name") {
+			r.HasBotMetadata = true
+		}
+		if rn.Has("bot") {
+			r.IsBotInvoke = true
+		}
+	}
+
+	// ── 10. Kesimpulan akhir ──
 	classifyVerdict(&r, true)
+
+	// ── 11. Naikkan verdict bila AKUN sudah dikenal bot dari pesan sebelumnya
+	//        (memori antar-pesan — menangkap bot web/iOS yang kirim pesan biasa). ──
+	applyAccountReputation(&r)
 
 	return r
 }
@@ -289,6 +327,10 @@ func DetectBotFromQuoted(stanzaID, participant string, quoted *waProto.Message) 
 	classifyAddressing(&r, participant)
 	if pj, err := types.ParseJID(participant); err == nil {
 		classifyDevice(&r, pj.Device)
+		// Normalisasi key reputasi (buang device-suffix) agar cocok dgn jalur live.
+		if u := pj.ToNonAD().User; u != "" {
+			r.SenderUser = u
+		}
 	}
 	r.SenderServer = serverOf(participant)
 	r.IsFromBotServer = r.SenderServer == "bot" ||
@@ -321,6 +363,10 @@ func DetectBotFromQuoted(stanzaID, participant string, quoted *waProto.Message) 
 	r.IsBaileysID = r.StrongBaileys || (r.AmbiguousID && !r.IsUseDevice)
 	computeEngineChecks(&r, r.RawMessageContextInfo)
 
+	// Sidik jari struktural dari salinan quoted (terbatas — WA membuang sebagian
+	// metadata raw dari pesan yang di-reply, jadi hasilnya kurang lengkap dari live).
+	r.Struct = AnalyzeStructure(quoted)
+
 	// IsBot = akun bot sungguhan (server-level). botMetadata/BotInvoke TIDAK dihitung
 	// di sini — itu sinyal thread-bot (interaksi), bukan bukti pengirim adalah bot.
 	r.IsBot = r.IsFromBotServer
@@ -331,6 +377,9 @@ func DetectBotFromQuoted(stanzaID, participant string, quoted *waProto.Message) 
 	// Tandai sebagai metadata tak lengkap → verdict cenderung "unknown" bila tak ada
 	// sinyal definitif (bot server / Baileys ID / HOSTED).
 	classifyVerdict(&r, r.RawMessageContextInfo)
+	// Reputasi akun berlaku lintas-jalur: bila akun ini sudah dikenal bot dari pesan
+	// live sebelumnya, salinan quote-nya pun divonis bot (metadata quote tak perlu).
+	applyAccountReputation(&r)
 	return r
 }
 
@@ -348,6 +397,7 @@ func classifyVerdict(r *BotDetectionResult, liveEnvelope bool) {
 	if r.IsFromBotServer {
 		r.Verdict = VerdictBot
 		r.VerdictReason = "akun/server bot WhatsApp"
+		r.DefinitiveBot = true
 		return
 	}
 
@@ -356,6 +406,7 @@ func classifyVerdict(r *BotDetectionResult, liveEnvelope bool) {
 	if r.StrongBaileys {
 		r.Verdict = VerdictBaileys
 		r.VerdictReason = "ID Baileys (" + r.BaileysIDPrefix + ")"
+		r.DefinitiveBot = true
 		return
 	}
 
@@ -363,6 +414,7 @@ func classifyVerdict(r *BotDetectionResult, liveEnvelope bool) {
 	if r.IsHostedEncryption {
 		r.Verdict = VerdictBot
 		r.VerdictReason = "enkripsi HOSTED (non-E2EE)"
+		r.DefinitiveBot = true
 		return
 	}
 
@@ -373,6 +425,18 @@ func classifyVerdict(r *BotDetectionResult, liveEnvelope bool) {
 	if liveEnvelope && r.IsPrimary {
 		r.Verdict = VerdictHuman
 		r.VerdictReason = "HP utama (device 0) — E2EE"
+		return
+	}
+
+	// 4b. TIPE PESAN INTERAKTIF (tombol/list/template/interactive) — TIDAK BISA dibuat
+	//     user WhatsApp personal; hanya bot/business-API. Sinyal bot yang berlaku TANPA
+	//     perlu reply. Menang atas DeviceListMetadata (bot Theresav memalsukan DLM tapi
+	//     terbongkar oleh interactiveMessage). Ditempatkan setelah #4 agar tak menyentuh
+	//     HP utama (device 0) — bila kelak ada akun business resmi di HP sendiri.
+	if liveEnvelope && r.Struct.InteractiveCompose {
+		r.Verdict = VerdictBot
+		r.VerdictReason = "pesan interaktif (tombol/list) — hanya bot/business"
+		r.DefinitiveBot = true
 		return
 	}
 
@@ -397,6 +461,29 @@ func classifyVerdict(r *BotDetectionResult, liveEnvelope bool) {
 	if liveEnvelope && r.IsBaileysID && r.AmbiguousID && !r.IsUseDevice {
 		r.Verdict = VerdictBaileys
 		r.VerdictReason = "ID 3EB0 tanpa metadata multi-device (Baileys)"
+		r.DefinitiveBot = true
+		return
+	}
+
+	// 5c. JEJAK STRUKTURAL BAILEYS — "ngaku Android tapi reply tanpa quotedType".
+	//     Klien WhatsApp ASLI selalu menempelkan field ContextInfo.quotedType (enum,
+	//     field 71) saat me-reply; Baileys/whatsmeow TIDAK. Tapi quotedType SENDIRIAN
+	//     tak cukup: WA Web ASLI juga me-reply TANPA quotedType (terbukti dari data) →
+	//     kalau dipakai sendirian, WA Web asli salah divonis BOT.
+	//
+	//     PEMBEDA: format message-ID. Bot yang tertangkap memalsukan ID ANDROID
+	//     ("AC"+hex, DeviceClass=android) — Az Clone (device 7) & Ashii (device 30)
+	//     dua-duanya reply tanpa quotedType. HP Android ASLI (Azumi) membawanya. WA Web
+	//     pakai ID web (3EB0, DeviceClass=web) → TIDAK kena aturan ini → tetap lolos.
+	//
+	//     Jadi kontradiksi inilah sinyalnya: ID ber-format Android (klien Android asli
+	//     SELALU set quotedType saat reply) TAPI reply-nya tanpa quotedType = pemalsu.
+	//     Gate: LIVE + COMPANION (device != 0; HP utama sudah lolos #4) + DeviceClass
+	//     android + reply tanpa quotedType. WA Web/iPhone/desktop tak tersentuh.
+	if liveEnvelope && r.IsSecondary && r.DeviceClass == "android" && r.Struct.ReplyNoQuotedType {
+		r.Verdict = VerdictBot
+		r.VerdictReason = "ID Android companion tapi reply tanpa quotedType (jejak Baileys)"
+		r.DefinitiveBot = true
 		return
 	}
 

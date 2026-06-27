@@ -110,16 +110,17 @@ func ExecuteDonghuaSearch(ctx *src.ContextBot) error {
 
 	if query == "" {
 		_, err := client.SendMessage(context.Background(), chatJID, &waE2E.Message{
-			Conversation: proto.String("❌ Format salah. Contoh: *anichin tales herding gods*"),
+			Conversation: proto.String("⚠️ Format salah.\n\n📌 *Cara pakai:* `anichin tales herding gods`"),
 		}, AndroidExtra())
 		return err
 	}
 
-	ctx.Reply("⏳ Memproses pencarian donghua...")
+	_ = ctx.React("⏳")
 
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/finder/anichin?q=%s", url.QueryEscape(query))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
+		_ = ctx.React("❌")
 		ctx.Reply("❌ Gagal terhubung ke API.")
 		return err
 	}
@@ -128,6 +129,7 @@ func ExecuteDonghuaSearch(ctx *src.ContextBot) error {
 	body, _ := io.ReadAll(resp.Body)
 	var data SearchAPIResponse
 	if err := json.Unmarshal(body, &data); err != nil || !data.Success || len(data.Result) == 0 {
+		_ = ctx.React("❌")
 		ctx.Reply(fmt.Sprintf("❌ Tidak ditemukan hasil untuk: %s", query))
 		return err
 	}
@@ -164,10 +166,12 @@ func ExecuteDonghuaSearch(ctx *src.ContextBot) error {
 	// Kirim Rich UI & daftarkan ID pesan ke reply-router
 	msgID, err := richBuilder.SendToChatWithID(ctx)
 	if err != nil {
+		_ = ctx.React("❌")
 		fmt.Println("❌ Gagal mengirim Donghua Rich Message:", err)
 		return err
 	}
 	replyRouter.Register(msgID, "donghua", newSession)
+	_ = ctx.React("✅")
 	return nil
 }
 
@@ -227,6 +231,7 @@ func loadDonghuaDetail(ctx *ContextBot, donghuaURL string) error {
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/anichin?url=%s", url.QueryEscape(donghuaURL))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal memuat detail.")
 	}
 	defer resp.Body.Close()
@@ -234,6 +239,7 @@ func loadDonghuaDetail(ctx *ContextBot, donghuaURL string) error {
 	body, _ := io.ReadAll(resp.Body)
 	var data DetailAPIResponse
 	if err := json.Unmarshal(body, &data); err != nil || !data.Success {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Terjadi kesalahan pada sistem server.")
 	}
 
@@ -273,6 +279,9 @@ func loadDonghuaDetail(ctx *ContextBot, donghuaURL string) error {
 	msgID, err := ctx.ReplyWithID(sb.String())
 	if err == nil {
 		replyRouter.Register(msgID, "donghua", newSession)
+		_ = ctx.React("✅")
+	} else {
+		_ = ctx.React("❌")
 	}
 	return err
 }
@@ -283,6 +292,7 @@ func loadEpisodeDetail(ctx *ContextBot, epURL string, base *DonghuaSessionData) 
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/anichin_eps?url=%s", url.QueryEscape(epURL))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal mengekstrak episode.")
 	}
 	defer resp.Body.Close()
@@ -290,6 +300,7 @@ func loadEpisodeDetail(ctx *ContextBot, epURL string, base *DonghuaSessionData) 
 	body, _ := io.ReadAll(resp.Body)
 	var data EpisodeAPIResponse
 	if err := json.Unmarshal(body, &data); err != nil || !data.Success {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Terjadi kesalahan server.")
 	}
 
@@ -333,6 +344,9 @@ func loadEpisodeDetail(ctx *ContextBot, epURL string, base *DonghuaSessionData) 
 	msgID, err := btn.SendToChatWithID(ctx)
 	if err == nil {
 		replyRouter.Register(msgID, "donghua", navSession)
+		_ = ctx.React("✅")
+	} else {
+		_ = ctx.React("❌")
 	}
 	return err
 }

@@ -124,6 +124,21 @@ func showDetection(ctx *ContextBot, det *src.BotDetectionResult, user, pushName,
 		}
 	}
 
+	// ── Node XMPP mentah (ringkas) — sidik jari level XMPP bila tertangkap live ──
+	if det.RawNode.Available {
+		if tags := strings.Join(det.RawNode.ChildTags, ","); tags != "" {
+			enc := det.RawNode.EncType
+			if det.RawNode.EncVer != "" {
+				enc = strings.TrimSpace(enc + " v" + det.RawNode.EncVer)
+			}
+			if enc != "" {
+				sb.WriteString(fmt.Sprintf("🧬 node: %s · enc %s\n", tags, enc))
+			} else {
+				sb.WriteString(fmt.Sprintf("🧬 node: %s\n", tags))
+			}
+		}
+	}
+
 	// ── Alasan ringkas ──
 	if det.VerdictReason != "" {
 		sb.WriteString(fmt.Sprintf("_%s._\n", det.VerdictReason))

@@ -65,5 +65,10 @@ func LookupDetection(msgID string) (BotDetectionResult, bool) {
 	if !ok || time.Now().After(c.expiresAt) {
 		return BotDetectionResult{}, false
 	}
-	return c.det, true
+	// Verdict tersimpan dihitung saat pesan tiba; reputasi akun bisa berubah sejak itu
+	// (mis. akun baru ketahuan bot dari pesan-pesan setelahnya). Terapkan ulang agar
+	// cekbot yang me-reply pesan lama tetap mencerminkan reputasi terbaru.
+	det := c.det
+	applyAccountReputation(&det)
+	return det, true
 }

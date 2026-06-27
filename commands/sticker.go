@@ -31,10 +31,10 @@ func ExecuteSticker(ctx *ContextBot) error {
 	//    baik dari reply maupun caption langsung.
 	mediaData, filename, ok := extractStickerSource(ctx)
 	if !ok || len(mediaData) == 0 {
-		return ctx.Reply("❌ Kirim/Balas *gambar, video, stiker,* atau media *sekali lihat* dengan perintah *s*.\n\nOpsional: `s NamaPack|NamaAuthor`")
+		return ctx.Reply("⚠️ Kirim/Balas *gambar, video, stiker,* atau media *sekali lihat* dengan perintah *s*.\n\n📌 *Cara pakai:* `s NamaPack|NamaAuthor` _(opsional)_")
 	}
 
-	ctx.Reply("⏳ Sedang memproses media menjadi stiker...")
+	_ = ctx.React("⏳")
 
 	// 2. Tentukan Nama Pack & Author dari Args (opsional: s PackKu|Namaku)
 	packName := "Sticker by"
@@ -50,16 +50,19 @@ func ExecuteSticker(ctx *ContextBot) error {
 	// 3. Konversi via API ps.azumi.dev (terima file, balas buffer WebP langsung).
 	webpBytes, ctype, err := src.MakeSticker(mediaData, filename, authorName, packName)
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal mengonversi media menjadi stiker.")
 	}
 	// API tools membalas binary WebP; bila content-type JSON berarti error terselubung.
 	if len(webpBytes) == 0 || strings.Contains(ctype, "application/json") {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ API stiker mengembalikan hasil tak valid.")
 	}
 
 	// 4. Upload Stiker WebP ke server WhatsApp
 	respMedia, err := ctx.Client.Upload(context.Background(), webpBytes, whatsmeow.MediaImage)
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal mengunggah stiker ke server WhatsApp.")
 	}
 
@@ -77,7 +80,12 @@ func ExecuteSticker(ctx *ContextBot) error {
 
 	// 5. Kirim Pesan Stiker
 	_, err = ctx.Client.SendMessage(context.Background(), ctx.ChatJID, msgToSend, AndroidExtra())
-	return err
+	if err != nil {
+		_ = ctx.React("❌")
+		return err
+	}
+	_ = ctx.React("✅")
+	return nil
 }
 
 // extractStickerSource mencari media yang bisa dijadikan stiker dari pesan ini

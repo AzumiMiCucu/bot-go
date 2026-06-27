@@ -95,21 +95,23 @@ func ExecuteTikTokStalk(ctx *ContextBot) error {
 	username = strings.TrimPrefix(username, "@")
 
 	if username == "" {
-		return ctx.Reply("❌ Masukkan username TikTok.\n\nContoh: *ttstalk smanda.cerita*")
+		return ctx.Reply("⚠️ Masukkan username TikTok.\n\n📌 *Cara pakai:* `ttstalk smanda.cerita`")
 	}
 
-	_ = ctx.Reply(fmt.Sprintf("🔍 Mengekstrak data profil TikTok *@%s*, mohon tunggu...", username))
+	_ = ctx.React("⏳")
 
 	// 1. Ambil Profil TikTok
 	profileReqBody, _ := json.Marshal(TTProfilePayload{UniqueID: username})
 	profileRaw, err := doTTRequest("https://ttviewer.net/api/tiktok/get-profile", profileReqBody)
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply(fmt.Sprintf("❌ Gagal menghubungi API profil: %v", err))
 	}
 
 	var profileResp TTProfileResponse
 	if err := json.Unmarshal(profileRaw, &profileResp); err != nil || profileResp.Code != 0 || profileResp.Data.User.UniqueID == "" {
-		return ctx.Reply(fmt.Sprintf("😕 Profil *@%s* tidak ditemukan atau API sedang bermasalah.", username))
+		_ = ctx.React("❌")
+		return ctx.Reply(fmt.Sprintf("❌ Profil *@%s* tidak ditemukan atau API sedang bermasalah.", username))
 	}
 
 	user := profileResp.Data.User
@@ -228,10 +230,12 @@ func ExecuteTikTokStalk(ctx *ContextBot) error {
 		}
 		_, err := ctx.Client.SendMessage(context.Background(), ctx.ChatJID.ToNonAD(), finalMsg, AndroidExtra())
 		if err == nil {
+			_ = ctx.React("✅")
 			return nil
 		}
 	}
 
+	_ = ctx.React("✅")
 	return ctx.Reply(replyText)
 }
 

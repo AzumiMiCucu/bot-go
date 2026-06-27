@@ -105,14 +105,15 @@ func ExecutePlay(ctx *ContextBot) error {
 
 	query := strings.TrimSpace(raw)
 	if query == "" {
-		return ctx.Reply("🎵 Sebutkan judul lagunya. Contoh: `play trouble --all`")
+		return ctx.Reply("⚠️ Sebutkan judul lagunya.\n\n📌 *Cara pakai:* `play trouble --all`")
 	}
 
-	_ = ctx.React("🔎")
+	_ = ctx.React("⏳")
 
 	songs, err := searchSongs(query)
 	if err != nil || len(songs) == 0 {
-		return ctx.Reply(fmt.Sprintf("😢 Lagu *%s* tidak ditemukan.", query))
+		_ = ctx.React("❌")
+		return ctx.Reply(fmt.Sprintf("❌ Lagu *%s* tidak ditemukan.", query))
 	}
 
 	if wantCall {

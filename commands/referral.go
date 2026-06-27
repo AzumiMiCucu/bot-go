@@ -155,7 +155,7 @@ func handleReferralClaim(ctx *ContextBot, rc *ReplyContext) error {
 	if won {
 		return ctx.Reply(fmt.Sprintf("🎉 +$%.3f! Saldo: $%.3f", data.Reward, newBal))
 	}
-	return ctx.Reply("😢 Sudah diklaim duluan.")
+	return ctx.Reply("⚠️ Sudah diklaim duluan.")
 }
 
 // ExecuteRefNow memicu broadcast referral manual (owner).

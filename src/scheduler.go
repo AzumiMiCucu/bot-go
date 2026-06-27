@@ -4,10 +4,14 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
 )
 
 // =================================================================
@@ -84,5 +88,148 @@ func flushPendingReads(client *whatsmeow.Client) {
 	}
 	if count > 0 {
 		fmt.Printf("[SCHEDULER] 📖 Auto-read: %d pesan ditandai dibaca.\n", count)
+	}
+}
+
+// =================================================================
+// AUTO-CLEAR CHAT: tiap N menit, "bersihkan" chat aktif dengan mengirim app-state
+// DeleteChat — menghapus chat dari TAMPILAN akun bot (tersinkron ke perangkat
+// tertaut bot). TIDAK menghapus pesan untuk lawan bicara. Chat akan muncul lagi
+// otomatis saat ada pesan baru, lalu dibersihkan lagi di siklus berikutnya.
+//
+// Owner DIKECUALIKAN (riwayat owner tak ikut dihapus). Bisa di-toggle owner via
+// command `autoclear on/off` (atomic, tanpa restart).
+// =================================================================
+
+type chatRec struct {
+	chat   types.JID
+	lastTS time.Time
+	key    *waCommon.MessageKey
+}
+
+var (
+	chatTracker   = make(map[string]*chatRec) // key = chat JID string
+	chatTrackerMu sync.Mutex
+
+	autoClearEnabled int32 // 0/1 — di-set dari config saat start, bisa di-toggle runtime
+)
+
+// RecordChat mencatat chat (+ kunci pesan terakhir) untuk kandidat auto-clear.
+// Dipanggil dari handler tiap pesan masuk. fromMe biasanya false (handler abaikan
+// pesan sendiri), tapi tetap diparam agar kunci akurat bila dipakai di tempat lain.
+func RecordChat(chat, sender types.JID, id types.MessageID, fromMe bool, ts time.Time) {
+	if chat.IsEmpty() || id == "" {
+		return
+	}
+	chatN := chat.ToNonAD()
+	k := chatN.String()
+
+	chatTrackerMu.Lock()
+	defer chatTrackerMu.Unlock()
+	rec := chatTracker[k]
+	if rec == nil {
+		rec = &chatRec{chat: chatN}
+		chatTracker[k] = rec
+	}
+	if !ts.IsZero() {
+		rec.lastTS = ts
+	} else {
+		rec.lastTS = time.Now()
+	}
+	mk := &waCommon.MessageKey{
+		RemoteJID: proto.String(k),
+		FromMe:    proto.Bool(fromMe),
+		ID:        proto.String(string(id)),
+	}
+	// Participant hanya relevan di grup (pengirim asli).
+	if chatN.Server == types.GroupServer && !sender.IsEmpty() {
+		mk.Participant = proto.String(sender.ToNonAD().String())
+	}
+	rec.key = mk
+}
+
+// SetAutoClear mengaktifkan/menonaktifkan auto-clear saat runtime + menyimpan ke
+// config. Scheduler tetap berjalan; flag ini yang menentukan apakah siklus bekerja.
+func SetAutoClear(on bool) {
+	if on {
+		atomic.StoreInt32(&autoClearEnabled, 1)
+	} else {
+		atomic.StoreInt32(&autoClearEnabled, 0)
+	}
+	if AppConfig != nil {
+		AppConfig.AutoClearChat = on
+		_ = SaveConfig()
+	}
+}
+
+// AutoClearOn melaporkan status auto-clear saat ini.
+func AutoClearOn() bool { return atomic.LoadInt32(&autoClearEnabled) == 1 }
+
+func autoClearInterval() time.Duration {
+	m := 30
+	if AppConfig != nil && AppConfig.AutoClearMinutes > 0 {
+		m = AppConfig.AutoClearMinutes
+	}
+	return time.Duration(m) * time.Minute
+}
+
+// StartAutoClearScheduler menjalankan siklus auto-clear. Ticker selalu berjalan;
+// tiap tick hanya bekerja bila auto-clear aktif (toggle runtime).
+func StartAutoClearScheduler(client *whatsmeow.Client) {
+	if AppConfig != nil && AppConfig.AutoClearChat {
+		atomic.StoreInt32(&autoClearEnabled, 1)
+	}
+	interval := autoClearInterval()
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if AutoClearOn() {
+				flushAutoClear(client)
+			}
+		}
+	}()
+	state := "NONAKTIF"
+	if AutoClearOn() {
+		state = "aktif"
+	}
+	fmt.Printf("[SCHEDULER] 🧹 Auto-clear chat %s (tiap %s; toggle: `autoclear on/off`).\n", state, interval)
+}
+
+func flushAutoClear(client *whatsmeow.Client) {
+	chatTrackerMu.Lock()
+	batch := chatTracker
+	chatTracker = make(map[string]*chatRec)
+	chatTrackerMu.Unlock()
+
+	if len(batch) == 0 {
+		return
+	}
+
+	owner := ""
+	if AppConfig != nil {
+		owner = AppConfig.OwnerNumber
+	}
+
+	cleared := 0
+	for _, rec := range batch {
+		if rec.key == nil {
+			continue
+		}
+		// Jangan hapus chat owner (pertahankan riwayat owner).
+		if owner != "" && rec.chat.User == owner {
+			continue
+		}
+		patch := appstate.BuildDeleteChat(rec.chat, rec.lastTS, rec.key, false)
+		if err := client.SendAppState(context.Background(), patch); err != nil {
+			fmt.Printf("[SCHEDULER] ⚠️ Auto-clear gagal utk %s: %v\n", rec.chat, err)
+			continue
+		}
+		cleared++
+		// Jangan banjiri server: jeda kecil antar-patch.
+		time.Sleep(300 * time.Millisecond)
+	}
+	if cleared > 0 {
+		fmt.Printf("[SCHEDULER] 🧹 Auto-clear: %d chat dibersihkan dari tampilan bot.\n", cleared)
 	}
 }

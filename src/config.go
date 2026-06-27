@@ -24,6 +24,12 @@ type Configuration struct {
 
 	// Panggilan masuk: bila true, semua call ke bot ditolak otomatis (anti-call).
 	AntiCall bool `json:"antiCall"`
+
+	// Auto-clear chat: bila true, tiap AutoClearMinutes menit bot membersihkan
+	// (menghapus dari tampilan akun bot via app-state) semua chat yang aktif —
+	// kecuali chat owner. Tidak menghapus pesan untuk orang lain.
+	AutoClearChat    bool `json:"autoClearChat"`
+	AutoClearMinutes int  `json:"autoClearMinutes"` // default 30
 }
 
 var AppConfig *Configuration
@@ -76,6 +82,9 @@ func InitConfig() {
 		}
 		if AppConfig.PrefixChar == "" {
 			AppConfig.PrefixChar = "."
+		}
+		if AppConfig.AutoClearMinutes <= 0 {
+			AppConfig.AutoClearMinutes = 30
 		}
 
 		fmt.Println("[SYSTEM] Konfigurasi berhasil dimuat.")

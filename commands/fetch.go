@@ -26,14 +26,15 @@ func ExecuteFetch(ctx *ContextBot) error {
 	matches := re.FindStringSubmatch(ctx.TextMessage)
 
 	if len(matches) == 0 {
-		return ctx.Reply("⚠️ URL tidak valid.\nContoh: *fetch https://google.com*")
+		return ctx.Reply("⚠️ URL tidak valid.\n\n📌 *Cara pakai:* `fetch https://google.com`")
 	}
 
 	targetUrl := matches[1]
-	ctx.Reply("⏳ Sedang mem-fetch URL...")
+	_ = ctx.React("⏳")
 
 	req, err := http.NewRequest("GET", targetUrl, nil)
 	if err != nil {
+		_ = ctx.React("❌")
 		return fmt.Errorf("gagal membuat request: %v", err)
 	}
 
@@ -57,12 +58,14 @@ func ExecuteFetch(ctx *ContextBot) error {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
+		_ = ctx.React("❌")
 		return fmt.Errorf("gagal melakukan fetch ke server tujuan: %v", err)
 	}
 	defer resp.Body.Close()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
+		_ = ctx.React("❌")
 		return fmt.Errorf("gagal membaca response body: %v", err)
 	}
 
@@ -75,8 +78,6 @@ func ExecuteFetch(ctx *ContextBot) error {
 
 
 
-	reply := fmt.Sprintf(bodyStr)
-
-
-	return ctx.Reply(reply)
+	_ = ctx.React("✅")
+	return ctx.Reply(bodyStr)
 }

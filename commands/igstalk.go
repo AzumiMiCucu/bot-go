@@ -124,10 +124,10 @@ func ExecuteIGStalk(ctx *ContextBot) error {
 	targetUsername = strings.TrimPrefix(targetUsername, "@")
 
 	if targetUsername == "" {
-		return ctx.Reply("⚠️ Harap masukkan username Instagram yang ingin dicari.\nContoh: `igstalk jokowi`")
+		return ctx.Reply("⚠️ Harap masukkan username Instagram yang ingin dicari.\n\n📌 *Cara pakai:* `igstalk jokowi`")
 	}
 
-	_ = ctx.Reply(fmt.Sprintf("🔍 Mengekstrak data profil IG *@%s*", targetUsername))
+	_ = ctx.React("⏳")
 
 	userAgent := "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36"
 	client := &http.Client{Timeout: 25 * time.Second}
@@ -140,6 +140,7 @@ func ExecuteIGStalk(ctx *ContextBot) error {
 
 	respInit, err := client.Do(reqInit)
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal terhubung ke server utama Inflact.")
 	}
 	defer respInit.Body.Close()
@@ -190,6 +191,7 @@ func ExecuteIGStalk(ctx *ContextBot) error {
 
 	respApi, err := client.Do(reqApi)
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Terjadi kesalahan saat memproses data Instagram.")
 	}
 	defer respApi.Body.Close()
@@ -200,6 +202,7 @@ func ExecuteIGStalk(ctx *ContextBot) error {
 	json.Unmarshal(apiBodyBytes, &resultJson)
 
 	if resultJson.Status != "success" {
+		_ = ctx.React("❌")
 		return ctx.Reply(fmt.Sprintf("❌ Gagal menemukan profil *@%s*. Pastikan username benar dan akun tidak ditangguhkan.", targetUsername))
 	}
 
@@ -326,9 +329,11 @@ func ExecuteIGStalk(ctx *ContextBot) error {
 		}
 		_, err := ctx.Client.SendMessage(context.Background(), ctx.ChatJID.ToNonAD(), finalMsg, AndroidExtra())
 		if err == nil {
+			_ = ctx.React("✅")
 			return nil
 		}
 	}
 
+	_ = ctx.React("✅")
 	return ctx.Reply(replyText)
 }

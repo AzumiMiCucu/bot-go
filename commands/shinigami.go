@@ -99,14 +99,15 @@ func init() {
 func ExecuteShinigamiSearch(ctx *ContextBot) error {
 	query := strings.TrimSpace(ctx.Args)
 	if query == "" {
-		return ctx.Reply("❌ Format salah. Contoh: *Manhwa nano machine*")
+		return ctx.Reply("⚠️ Format salah.\n\n📌 *Cara pakai:* `manhwa nano machine`")
 	}
 
-	_ = ctx.Reply("⏳ Memproses pencarian komik...")
+	_ = ctx.React("⏳")
 
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/finder/shinigami?q=%s", url.QueryEscape(query))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal terhubung ke API Shinigami.")
 	}
 	defer resp.Body.Close()
@@ -114,6 +115,7 @@ func ExecuteShinigamiSearch(ctx *ContextBot) error {
 	body, _ := io.ReadAll(resp.Body)
 	var data ShinigamiSearchRes
 	if err := json.Unmarshal(body, &data); err != nil || !data.Success || len(data.Result.Data) == 0 {
+		_ = ctx.React("❌")
 		return ctx.Reply(fmt.Sprintf("❌ Tidak ditemukan hasil untuk: %s", query))
 	}
 
@@ -143,6 +145,9 @@ func ExecuteShinigamiSearch(ctx *ContextBot) error {
 	msgID, err := ctx.ReplyWithID(sb.String())
 	if err == nil {
 		replyRouter.Register(msgID, "shinigami", newSession)
+		_ = ctx.React("✅")
+	} else {
+		_ = ctx.React("❌")
 	}
 	return err
 }
@@ -205,6 +210,7 @@ func loadMangaDetail(ctx *ContextBot, mangaID string) error {
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/shinigami?mangaId=%s", url.QueryEscape(mangaID))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal memuat detail komik.")
 	}
 	defer resp.Body.Close()
@@ -212,6 +218,7 @@ func loadMangaDetail(ctx *ContextBot, mangaID string) error {
 	body, _ := io.ReadAll(resp.Body)
 	var data ShinigamiDetailRes
 	if err := json.Unmarshal(body, &data); err != nil || !data.Success || !data.Result.Success {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Terjadi kesalahan pada sistem server.")
 	}
 
@@ -258,6 +265,9 @@ func loadMangaDetail(ctx *ContextBot, mangaID string) error {
 	msgID, err := ctx.ReplyWithID(sb.String())
 	if err == nil {
 		replyRouter.Register(msgID, "shinigami", newSession)
+		_ = ctx.React("✅")
+	} else {
+		_ = ctx.React("❌")
 	}
 	return err
 }
@@ -294,6 +304,9 @@ func sendChapterButton(ctx *ContextBot, chapterID string, chapterNum string, bas
 	msgID, err := btn.SendToChatWithID(ctx)
 	if err == nil {
 		replyRouter.Register(msgID, "shinigami", navSession)
+		_ = ctx.React("✅")
+	} else {
+		_ = ctx.React("❌")
 	}
 	return err
 }

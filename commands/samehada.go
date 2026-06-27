@@ -104,14 +104,15 @@ func init() {
 func ExecuteSamehadaSearch(ctx *ContextBot) error {
 	query := strings.TrimSpace(ctx.Args)
 	if query == "" {
-		return ctx.Reply("❌ Format salah. Contoh: *Anime kimetsu*")
+		return ctx.Reply("⚠️ Format salah.\n\n📌 *Cara pakai:* `anime kimetsu`")
 	}
 
-	_ = ctx.Reply("⏳ Memproses pencarian anime...")
+	_ = ctx.React("⏳")
 
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/finder/samehada?q=%s", url.QueryEscape(query))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal terhubung ke API Samehadaku.")
 	}
 	defer resp.Body.Close()
@@ -119,6 +120,7 @@ func ExecuteSamehadaSearch(ctx *ContextBot) error {
 	body, _ := io.ReadAll(resp.Body)
 	var data SamehadaSearchRes
 	if err := json.Unmarshal(body, &data); err != nil || !data.Success || len(data.Result) == 0 {
+		_ = ctx.React("❌")
 		return ctx.Reply(fmt.Sprintf("❌ Tidak ditemukan hasil untuk: %s", query))
 	}
 
@@ -143,6 +145,9 @@ func ExecuteSamehadaSearch(ctx *ContextBot) error {
 	msgID, err := ctx.ReplyWithID(sb.String())
 	if err == nil {
 		replyRouter.Register(msgID, "samehada", newSession)
+		_ = ctx.React("✅")
+	} else {
+		_ = ctx.React("❌")
 	}
 	return err
 }
@@ -212,6 +217,7 @@ func loadSamehadaDetail(ctx *ContextBot, urlStr string) error {
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/samehada?url=%s", url.QueryEscape(urlStr))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal memuat detail.")
 	}
 	defer resp.Body.Close()
@@ -219,6 +225,7 @@ func loadSamehadaDetail(ctx *ContextBot, urlStr string) error {
 	body, _ := io.ReadAll(resp.Body)
 	var data SamehadaDetailRes
 	if err := json.Unmarshal(body, &data); err != nil || !data.Success {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal memproses data anime.")
 	}
 
@@ -255,6 +262,9 @@ func loadSamehadaDetail(ctx *ContextBot, urlStr string) error {
 	msgID, err := ctx.ReplyWithID(sb.String())
 	if err == nil {
 		replyRouter.Register(msgID, "samehada", newSession)
+		_ = ctx.React("✅")
+	} else {
+		_ = ctx.React("❌")
 	}
 	return err
 }
@@ -265,6 +275,7 @@ func loadSamehadaEpisode(ctx *ContextBot, epURL string, currentEpNum int, epMap 
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/samehada_eps?url=%s", url.QueryEscape(epURL))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal memuat link episode.")
 	}
 	defer resp.Body.Close()
@@ -272,6 +283,7 @@ func loadSamehadaEpisode(ctx *ContextBot, epURL string, currentEpNum int, epMap 
 	body, _ := io.ReadAll(resp.Body)
 	var data SamehadaEpsRes
 	if err := json.Unmarshal(body, &data); err != nil || !data.Success {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal memproses data episode.")
 	}
 
@@ -320,6 +332,9 @@ func loadSamehadaEpisode(ctx *ContextBot, epURL string, currentEpNum int, epMap 
 	msgID, err := btn.SendToChatWithID(ctx)
 	if err == nil {
 		replyRouter.Register(msgID, "samehada", navSession)
+		_ = ctx.React("✅")
+	} else {
+		_ = ctx.React("❌")
 	}
 	return err
 }

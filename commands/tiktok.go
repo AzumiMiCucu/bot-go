@@ -135,7 +135,6 @@ func ExecuteTikTok(ctx *ContextBot) error {
 			if len(linkMatches) < maxSend {
 				maxSend = len(linkMatches)
 			}
-			_ = ctx.Reply(fmt.Sprintf("📂 Mengirim *%d* video terbaru dari profil... mohon tunggu.", maxSend))
 			sent := 0
 			for i := 0; i < maxSend; i++ {
 				title := "Tanpa Judul"

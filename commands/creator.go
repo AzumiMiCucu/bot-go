@@ -79,21 +79,25 @@ func sendOwnerContact(ctx *ContextBot, ownerNumber, ownerName string, contextInf
 		},
 	}, src.AndroidExtra())
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal mengirim kontak owner.")
 	}
+	_ = ctx.React("✅")
 	return nil
 }
 
 func sendCreatorCatalog(ctx *ContextBot, ownerNumber, ownerName string, contextInfo *waProto.ContextInfo) error {
-	_ = ctx.Reply("⏳ Mengambil data katalog developer...")
+	_ = ctx.React("⏳")
 
 	imgBytes, err := downloadImage("https://raw.githubusercontent.com/ZidniGz/dbdb/refs/heads/main/ResizedImage_2026-04-30_11-07-49_0538%5B1%5D.jpg")
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal mengambil gambar creator.")
 	}
 
 	uploaded, err := ctx.Client.Upload(context.Background(), imgBytes, whatsmeow.MediaImage)
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal mengunggah gambar ke server WhatsApp.")
 	}
 
@@ -124,9 +128,11 @@ func sendCreatorCatalog(ctx *ContextBot, ownerNumber, ownerName string, contextI
 		},
 	}, src.AndroidExtra())
 	if err != nil {
+		_ = ctx.React("❌")
 		return ctx.Reply("❌ Terjadi kesalahan saat mengirim katalog creator.")
 	}
 
+	_ = ctx.React("✅")
 	return nil
 }
 

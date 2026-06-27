@@ -99,7 +99,10 @@ func main() {
 
 	// Level WARN di produksi: DEBUG mencetak tiap node XMPP masuk/keluar
 	// (I/O sinkron yang sangat berat & memperlambat respon di bawah beban).
-	clientLog := waLog.Stdout("Client", "WARN", true)
+	// Logger dibungkus NewCaptureLogger agar node <message> mentah (XMLString dari
+	// sub-logger "Recv") tetap DITANGKAP untuk deteksi bot — tanpa harus DEBUG &
+	// tanpa mencetak apa pun (lihat src/rawnode.go).
+	clientLog := src.NewCaptureLogger(waLog.Stdout("Client", "WARN", true), "Client")
 	client = whatsmeow.NewClient(deviceStore, clientLog)
 	client.AddEventHandler(eventHandler)
 
@@ -141,6 +144,7 @@ func main() {
 
 	// Mulai scheduler latar belakang
 	src.StartAutoReadScheduler(client)
+	src.StartAutoClearScheduler(client)
 	commands.StartReferralScheduler(client)
 
 	c := make(chan os.Signal, 1)
