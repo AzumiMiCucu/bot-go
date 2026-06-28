@@ -3,6 +3,8 @@ package commands
 import (
 	"sync"
 	"time"
+
+	waProto "go.mau.fi/whatsmeow/binary/proto"
 )
 
 // =================================================================
@@ -80,15 +82,52 @@ func (r *ReplyRouter) cleanup() {
 
 // quotedMsgID mengambil ID pesan yang di-reply (StanzaID) dari pesan masuk.
 // Kosong bila pesan ini bukan sebuah reply.
+//
+// Penting: context-info bisa berada di BANYAK tipe pesan, bukan hanya
+// ExtendedTextMessage. Saat user MENGETUK tombol (quick_reply native-flow),
+// balasannya datang sebagai InteractiveResponseMessage / ButtonsResponseMessage —
+// quote-nya ada di sana, bukan di teks. Tanpa membaca semua tipe ini, tombol
+// "Previous/Next" tak pernah cocok dengan reply-router.
 func quotedMsgID(ctx *ContextBot) string {
 	if ctx == nil || ctx.Msg == nil {
 		return ""
 	}
-	ci := ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo()
+	ci := extractContextInfo(ctx.Msg.Message)
 	if ci == nil {
 		return ""
 	}
 	return ci.GetStanzaID()
+}
+
+// extractContextInfo menarik ContextInfo dari tipe pesan apa pun yang relevan
+// untuk interaksi reply/tombol.
+func extractContextInfo(m *waProto.Message) *waProto.ContextInfo {
+	if m == nil {
+		return nil
+	}
+	switch {
+	case m.GetExtendedTextMessage() != nil:
+		return m.GetExtendedTextMessage().GetContextInfo()
+	case m.GetInteractiveResponseMessage() != nil:
+		return m.GetInteractiveResponseMessage().GetContextInfo()
+	case m.GetButtonsResponseMessage() != nil:
+		return m.GetButtonsResponseMessage().GetContextInfo()
+	case m.GetListResponseMessage() != nil:
+		return m.GetListResponseMessage().GetContextInfo()
+	case m.GetTemplateButtonReplyMessage() != nil:
+		return m.GetTemplateButtonReplyMessage().GetContextInfo()
+	case m.GetImageMessage() != nil:
+		return m.GetImageMessage().GetContextInfo()
+	case m.GetVideoMessage() != nil:
+		return m.GetVideoMessage().GetContextInfo()
+	case m.GetDocumentMessage() != nil:
+		return m.GetDocumentMessage().GetContextInfo()
+	case m.GetAudioMessage() != nil:
+		return m.GetAudioMessage().GetContextInfo()
+	case m.GetStickerMessage() != nil:
+		return m.GetStickerMessage().GetContextInfo()
+	}
+	return nil
 }
 
 // RouteReply menangani pesan yang me-reply sebuah pesan bot terdaftar.

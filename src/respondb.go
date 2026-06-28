@@ -21,13 +21,18 @@ import (
 // (tanpa query DB); byte media hanya diambil dari DB SAAT keyword terpicu.
 // =================================================================
 
-// Tipe balasan yang didukung.
+// Tipe balasan / AKSI yang didukung.
 const (
 	ResponText    = "text"
 	ResponImage   = "image"
 	ResponVideo   = "video"
 	ResponAudio   = "audio"
 	ResponSticker = "sticker"
+	// ResponCommand = PINTASAN: alih-alih membalas media, bot MENJALANKAN sebuah
+	// perintah (disimpan di kolom `text`). Dipicu oleh stiker/gambar/video/audio.
+	// PUBLIK — siapa pun boleh memicu; bila perintah tujuan ber-middleware owner,
+	// middleware command itu sendiri yang menolak (lihat executeShortcut).
+	ResponCommand = "command"
 )
 
 // Tipe pencocokan keyword terhadap teks pesan masuk.
@@ -39,10 +44,12 @@ const (
 // ResponMaxMediaBytes membatasi ukuran media yang boleh disimpan (hindari DB membengkak).
 const ResponMaxMediaBytes = 30 * 1024 * 1024 // 30 MB
 
-// Tipe PEMICU (trigger): teks biasa, atau sebuah STIKER (dicocokkan via hash).
+// Tipe PEMICU (trigger): teks biasa, sebuah STIKER, atau MEDIA umum
+// (gambar/video/audio) — keduanya dicocokkan via hash file (FileSHA256).
 const (
 	TriggerText    = "text"
 	TriggerSticker = "sticker"
+	TriggerMedia   = "media" // gambar/video/audio/stiker → kunci "img:/vid:/aud:/stk:<hash>"
 )
 
 // Respon = satu aturan auto-respon (tanpa byte media — itu diambil terpisah).
@@ -154,7 +161,10 @@ func AddResponFull(keyword, triggerType, label, matchType, respType, text, mimet
 	if matchType != MatchContains {
 		matchType = MatchExact
 	}
-	if triggerType != TriggerSticker {
+	switch triggerType {
+	case TriggerSticker, TriggerMedia:
+		// pemicu berbasis hash media — biarkan
+	default:
 		triggerType = TriggerText
 	}
 	var blob interface{}
@@ -286,15 +296,16 @@ func MatchRespon(text string) (Respon, bool) {
 	return Respon{}, false
 }
 
-// MatchResponSticker mencari aturan respon yang dipicu sebuah STIKER (via key
-// "stk:<hash>"). Mengembalikan (respon, true) bila ada.
-func MatchResponSticker(key string) (Respon, bool) {
+// MatchResponMedia mencari aturan yang dipicu MEDIA (stiker/gambar/video/audio)
+// via key "<prefix>:<hash>". Mencakup pemicu stiker lama (TriggerSticker) maupun
+// pemicu media/pintasan baru (TriggerMedia). Mengembalikan (respon, true) bila ada.
+func MatchResponMedia(key string) (Respon, bool) {
 	if key == "" {
 		return Respon{}, false
 	}
 	responMu.RLock()
 	defer responMu.RUnlock()
-	if r, ok := responCache[key]; ok && r.TriggerType == TriggerSticker {
+	if r, ok := responCache[key]; ok && (r.TriggerType == TriggerSticker || r.TriggerType == TriggerMedia) {
 		return r, true
 	}
 	return Respon{}, false

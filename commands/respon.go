@@ -66,6 +66,12 @@ func ExecuteRespon(ctx *ContextBot) error {
 	case "addstiker", "addsticker", "stiker", "sticker":
 		// Trigger STIKER: balas/​reply sebuah stiker lalu set balasannya.
 		return responAddSticker(ctx, rest)
+	case "addmedia", "addmed", "media":
+		// Trigger MEDIA (gambar/video/audio/stiker) → balasan media/teks.
+		return responAddMedia(ctx, rest)
+	case "pintas", "pintasan", "shortcut", "sc":
+		// PINTASAN: reply stiker/media lalu petakan ke sebuah perintah bot.
+		return responShortcut(ctx, rest)
 	case "del", "delete", "hapus", "rm":
 		return responDel(ctx, rest)
 	case "list", "daftar", "ls":
@@ -124,6 +130,144 @@ func responAddSticker(ctx *ContextBot, arg string) error {
 		return ctx.Reply("❌ Gagal menyimpan respon: " + err.Error())
 	}
 	return ctx.Reply(responStickerSavedMsg(label, src.ResponText))
+}
+
+// responShortcut memetakan sebuah STIKER/MEDIA (gambar/video/audio) menjadi
+// PINTASAN ke perintah bot apa pun. Owner me-reply medianya lalu menetapkan
+// perintah tujuan:
+//
+//	respon pintas <perintah>            (label = perintah)
+//	respon pintas <label> | <perintah>  (label kustom)
+//
+// PUBLIK: setelah terpasang, siapa pun yang mengirim media yang sama akan
+// memicu perintah tujuan. Bila perintah tujuan ber-middleware owner, middleware
+// itu sendiri yang menolak pemicu non-owner.
+func responShortcut(ctx *ContextBot, arg string) error {
+	key, kind := quotedMediaKey(ctx)
+	if key == "" {
+		return ctx.Reply("⚠️ Reply (balas) sebuah *stiker/gambar/video/audio* lalu ketik:\n`respon pintas <perintah>`\n\nContoh: reply stiker → `respon pintas menu`")
+	}
+
+	arg = strings.TrimSpace(arg)
+	label := ""
+	cmdText := arg
+	if i := strings.Index(arg, "|"); i >= 0 {
+		label = strings.TrimSpace(arg[:i])
+		cmdText = strings.TrimSpace(arg[i+1:])
+	}
+	if cmdText == "" {
+		return ctx.Reply("⚠️ Tentukan perintah tujuan.\nContoh: `respon pintas play lo-fi study` (sambil reply stiker).")
+	}
+
+	// Validasi: perintah tujuan harus dikenali registry (cegah salah ketik).
+	if cmd, _ := MatchCommand(cmdText); cmd == nil {
+		return ctx.Reply(fmt.Sprintf("⚠️ Perintah `%s` tidak dikenal. Cek ejaan atau lihat daftar lewat `menu`.", cmdText))
+	}
+
+	if label == "" {
+		label = responTruncate(oneLine(cmdText), 24)
+	}
+
+	if err := src.AddResponFull(key, src.TriggerMedia, label, src.MatchExact, src.ResponCommand, cmdText, "", nil, ctx.User); err != nil {
+		return ctx.Reply("❌ Gagal menyimpan pintasan: " + err.Error())
+	}
+	return ctx.Reply(fmt.Sprintf("✅ *Pintasan tersimpan.*\n\n🎯 Pemicu : kirim %s yang sama\n🏷️ Label  : `%s`\n⚡ Aksi   : `%s`\n\n_Berlaku untuk semua anggota. Hapus dengan_ `respon hapus %s`",
+		kind, label, cmdText, label))
+}
+
+// executeShortcut menjalankan perintah tujuan sebuah pintasan, seolah pemicu
+// mengetik perintah itu. Middleware/price/permission perintah tujuan tetap
+// berlaku (dijaga di ExecuteWithMiddlewares). Dijalankan asinkron agar tak
+// memblokir jalur pesan.
+func executeShortcut(ctx *ContextBot, r src.Respon) bool {
+	cmd, args := MatchCommand(r.Text)
+	if cmd == nil {
+		_ = ctx.Reply(fmt.Sprintf("⚠️ Pintasan `%s` menunjuk perintah tak dikenal: `%s`", r.Label, r.Text))
+		return true
+	}
+	ctx.Args = args
+	ctx.TextMessage = r.Text
+	ctx.Print("[PINTASAN] %s → %s", r.Label, r.Text)
+
+	go func() {
+		_ = ExecuteHooks(HookBeforeExecute, ctx, cmd, nil)
+		if err := ExecuteWithMiddlewares(ctx, cmd); err != nil {
+			_ = ExecuteHooks(HookOnError, ctx, cmd, err)
+		} else {
+			_ = ExecuteHooks(HookAfterExecute, ctx, cmd, nil)
+		}
+	}()
+	return true
+}
+
+// responAddMedia membuat aturan respon yang DIPICU oleh sebuah MEDIA umum
+// (gambar/video/audio/stiker) — generalisasi dari `addstiker`. Owner me-reply
+// media pemicu, lalu menentukan balasannya:
+//   - MEDIA → kirim gambar/video/audio/stiker (caption `respon addmedia [label]`)
+//     sambil reply media pemicunya → "media to media".
+//   - TEKS  → `respon addmedia [label] | <teks balasan>`
+//
+// Pemicu dicocokkan via hash file (FileSHA256), jadi siapa pun yang mengirim
+// media yang sama akan memicu balasan ini.
+func responAddMedia(ctx *ContextBot, arg string) error {
+	key, kind := quotedMediaKey(ctx)
+	if key == "" {
+		return ctx.Reply("⚠️ Reply (balas) sebuah *gambar/video/audio/stiker* lalu set balasannya:\n• kirim media (caption `respon addmedia [label]`) → balasan MEDIA\n• atau `respon addmedia [label] | <teks>` → balasan teks")
+	}
+
+	label := strings.TrimSpace(arg)
+	respText := ""
+	if i := strings.Index(arg, "|"); i >= 0 {
+		label = strings.TrimSpace(arg[:i])
+		respText = strings.TrimSpace(arg[i+1:])
+	}
+	if label == "" {
+		label = kind + "-" + shortKeyLabel(key)
+	}
+
+	// Balasan MEDIA dari pesan INI sendiri (yang di-reply = pemicu).
+	rtype, data, mime, _ := extractCurrentMedia(ctx)
+	if rtype != "" && len(data) > 0 {
+		if err := src.AddResponFull(key, src.TriggerMedia, label, src.MatchExact, rtype, respText, mime, data, ctx.User); err != nil {
+			return ctx.Reply("❌ Gagal menyimpan respon: " + err.Error())
+		}
+		return ctx.Reply(responMediaSavedMsg(label, kind, rtype))
+	}
+
+	if respText == "" {
+		return ctx.Reply("⚠️ Belum ada balasan.\n\nLampirkan media (caption `respon addmedia [label]`) atau pakai `respon addmedia [label] | <teks>`.")
+	}
+	if err := src.AddResponFull(key, src.TriggerMedia, label, src.MatchExact, src.ResponText, respText, "", nil, ctx.User); err != nil {
+		return ctx.Reply("❌ Gagal menyimpan respon: " + err.Error())
+	}
+	return ctx.Reply(responMediaSavedMsg(label, kind, src.ResponText))
+}
+
+func responMediaSavedMsg(label, kind, rtype string) string {
+	return fmt.Sprintf("✅ Respon *media* tersimpan.\n\n🏷️ Label  : `%s`\n🎯 Pemicu : kirim %s yang sama\n🧩 Balasan: %s %s\n\n_Berlaku untuk semua anggota. Hapus dengan_ `respon hapus %s`",
+		label, kind, responTypeIcon(rtype), rtype, label)
+}
+
+// shortKeyLabel mengambil potongan alnum singkat dari kunci hash media
+// ("img:<base64>") untuk dipakai sebagai label default yang mudah diketik.
+func shortKeyLabel(key string) string {
+	seg := key
+	if i := strings.Index(seg, ":"); i >= 0 {
+		seg = seg[i+1:]
+	}
+	var b strings.Builder
+	for _, r := range seg {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+		if b.Len() >= 6 {
+			break
+		}
+	}
+	if b.Len() == 0 {
+		return "media"
+	}
+	return b.String()
 }
 
 func responStickerSavedMsg(label, rtype string) string {
@@ -238,13 +382,18 @@ func responList(ctx *ContextBot) error {
 		preview := ""
 		if r.Type == src.ResponText {
 			preview = " — " + responTruncate(oneLine(r.Text), 30)
+		} else if r.Type == src.ResponCommand {
+			preview = " → `" + responTruncate(oneLine(r.Text), 28) + "`"
 		} else if r.Text != "" {
 			preview = " — 📝 " + responTruncate(oneLine(r.Text), 24)
 		}
-		// Trigger stiker tampil pakai LABEL (keyword-nya berupa hash).
+		// Trigger media (keyword-nya berupa hash) tampil pakai LABEL.
 		name := r.Keyword
-		if r.TriggerType == src.TriggerSticker {
-			name = "🔖 " + r.Label + " (stiker)"
+		switch {
+		case r.Type == src.ResponCommand:
+			name = r.Label + " (pintasan)"
+		case r.TriggerType == src.TriggerSticker || r.TriggerType == src.TriggerMedia:
+			name = r.Label + " (media)"
 		}
 		sb.WriteString(fmt.Sprintf("%d. %s `%s`%s%s\n", i+1, icon, name, mt, preview))
 	}
@@ -295,6 +444,12 @@ func responHelp() string {
 		"🔖 *Trigger stiker* (kirim stiker → bot balas):\n" +
 		"reply stiker + `respon addstiker [label] | <balasan teks>`\n" +
 		"_atau_ kirim gambar/video (caption `respon addstiker [label]`) sambil reply stikernya.\n\n" +
+		"🎞️ *Trigger media* (kirim media → bot balas media/teks):\n" +
+		"reply gambar/video/audio/stiker + kirim media (caption `respon addmedia [label]`)\n" +
+		"_atau_ `respon addmedia [label] | <teks>` → media-to-media.\n\n" +
+		"⚡ *Pintasan* (kirim stiker/media → bot jalankan perintah):\n" +
+		"reply stiker/gambar/video + `respon pintas <perintah>`\n" +
+		"_contoh:_ reply stiker → `respon pintas menu` lalu kirim stiker itu = buka menu.\n\n" +
 		"_Opsi:_ tambahkan `--contains` agar cocok bila pesan *mengandung* keyword " +
 		"(default: sama persis).\n" +
 		"_Catatan:_ auto-respon hanya jalan saat grup *tidak* mode self."
@@ -309,25 +464,27 @@ func HandleAutoRespon(ctx *ContextBot) bool {
 	if src.ResponCount() == 0 {
 		return false
 	}
-	// Mode self (per-grup) → auto-respon dimatikan.
-	if ctx.IsGroup && src.DB.IsGroupSelf(ctx.ChatJID.ToNonAD().String()) {
+	// Mode self (per-grup) → auto-respon dimatikan UNTUK NON-OWNER. Owner tetap
+	// bisa memakai pintasan/respon di grup self.
+	if ctx.IsGroup && !ctx.IsOwner && src.DB.IsGroupSelf(ctx.ChatJID.ToNonAD().String()) {
 		return false
 	}
 
-	// 1) Trigger STIKER: pesan masuk berupa stiker → cocokkan via hash.
-	if stk := src.UnwrapMessage(ctx.Msg.Message).GetStickerMessage(); stk != nil {
-		if len(stk.GetFileSHA256()) == 0 {
-			return false
+	// 1) Trigger MEDIA (stiker/gambar/video/audio) → cocokkan via hash metadata.
+	if key := mediaKeyFromMsg(ctx.Msg.Message); key != "" {
+		if r, ok := src.MatchResponMedia(key); ok {
+			// PINTASAN → jalankan perintah tujuan (publik; gating ada di command).
+			if r.Type == src.ResponCommand {
+				return executeShortcut(ctx, r)
+			}
+			// Auto-respon media biasa → kirim balasan tersimpan.
+			if err := sendRespon(ctx, r); err != nil {
+				ctx.Print("[RESPON] gagal kirim media-trigger '%s': %v", r.Label, err)
+				return false
+			}
+			return true
 		}
-		r, ok := src.MatchResponSticker(stickerKey(stk.GetFileSHA256()))
-		if !ok {
-			return false
-		}
-		if err := sendRespon(ctx, r); err != nil {
-			ctx.Print("[RESPON] gagal kirim stiker-trigger '%s': %v", r.Label, err)
-			return false
-		}
-		return true
+		// Tak ada aturan untuk media ini → lanjut cek teks/caption di bawah.
 	}
 
 	// 2) Trigger TEKS.
@@ -434,11 +591,22 @@ func sendRespon(ctx *ContextBot, r src.Respon) error {
 
 // ================= HELPER EKSTRAKSI MEDIA / TEKS DARI REPLY =================
 
+// quotedMessage mengembalikan pesan yang DI-REPLY dari pesan masuk, apa pun
+// tipe pesan pembawanya (teks, ATAU media dengan caption). Mengambil context-info
+// secara generik agar reply yang membawa media (mis. kirim gambar sambil reply
+// stiker) tetap terbaca — bukan hanya ExtendedTextMessage.
+func quotedMessage(ctx *ContextBot) *waProto.Message {
+	ci := extractContextInfo(ctx.Msg.Message)
+	if ci == nil {
+		return nil
+	}
+	return ci.GetQuotedMessage()
+}
+
 // extractResponMedia mengambil media dari pesan yang di-reply (utamakan) atau pesan
 // ini sendiri. Mengembalikan (tipe-respon, byte, mimetype, namaFile).
 func extractResponMedia(ctx *ContextBot) (rtype string, data []byte, mime, filename string) {
-	quoted := ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage()
-	return extractMediaFrom(ctx, quoted, ctx.Msg.Message)
+	return extractMediaFrom(ctx, quotedMessage(ctx), ctx.Msg.Message)
 }
 
 // extractCurrentMedia hanya melihat media pada pesan INI (bukan yang di-reply).
@@ -478,21 +646,71 @@ func extractMediaFrom(ctx *ContextBot, msgs ...*waProto.Message) (rtype string, 
 
 // quotedSticker mengembalikan StickerMessage dari pesan yang di-reply (bila ada).
 func quotedSticker(ctx *ContextBot) *waProto.StickerMessage {
-	q := src.UnwrapMessage(ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage())
+	q := src.UnwrapMessage(quotedMessage(ctx))
 	if q == nil {
 		return nil
 	}
 	return q.GetStickerMessage()
 }
 
+// mk menurunkan kunci pencocokan stabil "<prefix>:<base64(sha)>" dari hash file.
+// Kosong bila hash kosong (mis. media tanpa FileSHA256).
+func mk(prefix string, sha []byte) string {
+	if len(sha) == 0 {
+		return ""
+	}
+	return prefix + base64.StdEncoding.EncodeToString(sha)
+}
+
 // stickerKey menurunkan kunci pencocokan stabil dari hash file stiker.
 func stickerKey(sha []byte) string {
-	return "stk:" + base64.StdEncoding.EncodeToString(sha)
+	return mk("stk:", sha)
+}
+
+// mediaKeyFromMsg mengembalikan kunci hash media untuk sebuah pesan (stiker/
+// gambar/video/audio), DIAMBIL DARI METADATA tanpa mengunduh. Kosong bila pesan
+// bukan media yang didukung atau hash-nya kosong.
+func mediaKeyFromMsg(m *waProto.Message) string {
+	m = src.UnwrapMessage(m)
+	if m == nil {
+		return ""
+	}
+	switch {
+	case m.GetStickerMessage() != nil:
+		return mk("stk:", m.GetStickerMessage().GetFileSHA256())
+	case m.GetImageMessage() != nil:
+		return mk("img:", m.GetImageMessage().GetFileSHA256())
+	case m.GetVideoMessage() != nil:
+		return mk("vid:", m.GetVideoMessage().GetFileSHA256())
+	case m.GetAudioMessage() != nil:
+		return mk("aud:", m.GetAudioMessage().GetFileSHA256())
+	}
+	return ""
+}
+
+// quotedMediaKey mengambil kunci hash media dari pesan yang DI-REPLY beserta
+// label jenisnya (untuk ditampilkan ke user). Kosong bila reply bukan media.
+func quotedMediaKey(ctx *ContextBot) (key, kind string) {
+	q := src.UnwrapMessage(quotedMessage(ctx))
+	if q == nil {
+		return "", ""
+	}
+	switch {
+	case q.GetStickerMessage() != nil:
+		return mk("stk:", q.GetStickerMessage().GetFileSHA256()), "stiker"
+	case q.GetImageMessage() != nil:
+		return mk("img:", q.GetImageMessage().GetFileSHA256()), "gambar"
+	case q.GetVideoMessage() != nil:
+		return mk("vid:", q.GetVideoMessage().GetFileSHA256()), "video"
+	case q.GetAudioMessage() != nil:
+		return mk("aud:", q.GetAudioMessage().GetFileSHA256()), "audio"
+	}
+	return "", ""
 }
 
 // quotedText mengambil teks dari pesan yang di-reply (bila ada).
 func quotedText(ctx *ContextBot) string {
-	q := ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage()
+	q := quotedMessage(ctx)
 	if q == nil {
 		return ""
 	}
@@ -501,7 +719,7 @@ func quotedText(ctx *ContextBot) string {
 
 // quotedCaption mengambil caption media pesan yang di-reply (gambar/video).
 func quotedCaption(ctx *ContextBot) string {
-	q := src.UnwrapMessage(ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage())
+	q := src.UnwrapMessage(quotedMessage(ctx))
 	if q == nil {
 		return ""
 	}
@@ -524,6 +742,8 @@ func responTypeIcon(t string) string {
 		return "🎵"
 	case src.ResponSticker:
 		return "🔖"
+	case src.ResponCommand:
+		return "⚡"
 	default:
 		return "💬"
 	}

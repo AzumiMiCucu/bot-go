@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"bot-go/src"
 )
 
 // =============================================
@@ -39,10 +41,12 @@ type ShinigamiSearchRes struct {
 	Success bool `json:"success"`
 	Result  struct {
 		Data []struct {
-			Title    string  `json:"title"`
-			MangaID  string  `json:"manga_id"`
-			UserRate float64 `json:"user_rate"`
-			Taxonomy struct {
+			Title            string  `json:"title"`
+			MangaID          string  `json:"manga_id"`
+			UserRate         float64 `json:"user_rate"`
+			CoverImageURL    string  `json:"cover_image_url"`
+			CoverPortraitURL string  `json:"cover_portrait_url"`
+			Taxonomy         struct {
 				Format []struct {
 					Name string `json:"name"`
 				} `json:"Format"`
@@ -123,8 +127,10 @@ func ExecuteShinigamiSearch(ctx *ContextBot) error {
 		State: "list",
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🔍 *Hasil Pencarian Komik: %s*\n\n", strings.ToUpper(query)))
+	// Tampilan kartu AIRich (dengan gambar) — konsisten dengan `play --all`.
+	rb := src.NewAIRich().
+		SetTitle(fmt.Sprintf("🔍 Hasil Pencarian Komik: %s", strings.ToUpper(query))).
+		SetFooter("Balas dengan NOMOR (1-10) untuk melihat detail komik")
 
 	for i, item := range data.Result.Data {
 		if i >= 10 {
@@ -134,22 +140,29 @@ func ExecuteShinigamiSearch(ctx *ContextBot) error {
 		if len(item.Taxonomy.Format) > 0 {
 			format = item.Taxonomy.Format[0].Name
 		}
+		cover := item.CoverPortraitURL
+		if cover == "" {
+			cover = item.CoverImageURL
+		}
 
-		sb.WriteString(fmt.Sprintf("*%d.* %s\n", i+1, item.Title))
-		sb.WriteString(fmt.Sprintf("└ %s | Rating: %.1f\n\n", format, item.UserRate))
+		rb.AddText(fmt.Sprintf("*%d.* %s", i+1, item.Title))
+		rb.AddProduct(src.AIProduct{
+			Title:    item.Title,
+			Brand:    format,
+			Price:    fmt.Sprintf("⭐ %.1f", item.UserRate),
+			ImageURL: cover,
+		})
 		newSession.MangaIDs = append(newSession.MangaIDs, item.MangaID)
 	}
 
-	sb.WriteString("---\nReply pesan ini dengan angka *(1-10)* untuk melihat detail komik.")
-
-	msgID, err := ctx.ReplyWithID(sb.String())
-	if err == nil {
-		replyRouter.Register(msgID, "shinigami", newSession)
-		_ = ctx.React("✅")
-	} else {
+	msgID, err := rb.SendToChatWithID(ctx)
+	if err != nil {
 		_ = ctx.React("❌")
+		return ctx.Reply("❌ Gagal menampilkan daftar komik.")
 	}
-	return err
+	replyRouter.Register(msgID, "shinigami", newSession)
+	_ = ctx.React("✅")
+	return nil
 }
 
 // =============================================

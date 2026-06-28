@@ -140,7 +140,8 @@ func ExecuteDonghuaSearch(ctx *src.ContextBot) error {
 	}
 
 	richBuilder := src.NewAIRich().
-		SetTitle(fmt.Sprintf("Hasil Pencarian: %s", strings.ToUpper(query)))
+		SetTitle(fmt.Sprintf("Hasil Pencarian: %s", strings.ToUpper(query))).
+		SetFooter("Balas dengan NOMOR (1-10) untuk melihat detail donghua")
 
 	for i, donghua := range data.Result {
 		if i >= 10 {
@@ -150,8 +151,7 @@ func ExecuteDonghuaSearch(ctx *src.ContextBot) error {
 		// Simpan URL ke session
 		newSession.DonghuaURLs = append(newSession.DonghuaURLs, donghua.URL)
 
-		teksInfo := fmt.Sprintf("*%d.* \n", i+1)
-		richBuilder.AddText(teksInfo)
+		richBuilder.AddText(fmt.Sprintf("*%d.* %s", i+1, donghua.Title))
 
 		richBuilder.AddProduct(src.AIProduct{
 			Title:      donghua.Title,

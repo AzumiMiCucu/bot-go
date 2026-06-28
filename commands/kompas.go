@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"bot-go/src"
 )
 
 // =============================================
@@ -35,6 +37,7 @@ type KompasTrendingRes struct {
 		Link        string `json:"link"`
 		Category    string `json:"category"`
 		PublishTime string `json:"publish_time"`
+		ImageURL    string `json:"image_url"`
 	} `json:"result"`
 }
 
@@ -46,6 +49,7 @@ type KompasSearchRes struct {
 		URL           string `json:"url"`
 		Category      string `json:"category"`
 		PublishedDate string `json:"published_date"`
+		ImageURL      string `json:"image_url"`
 	} `json:"result"`
 }
 
@@ -94,7 +98,8 @@ func ExecuteKompasSearch(ctx *ContextBot) error {
 		State: "list",
 	}
 
-	var sb strings.Builder
+	// Tampilan kartu AIRich (dengan gambar) — konsisten dengan `play --all`.
+	rb := src.NewAIRich().SetFooter("Balas dengan NOMOR (1-10) untuk membaca detail berita")
 
 	// Cabang 1: Jika user TIDAK memberikan query (Ambil Trending)
 	if query == "" {
@@ -113,13 +118,19 @@ func ExecuteKompasSearch(ctx *ContextBot) error {
 			return ctx.Reply("❌ Tidak ada berita terkini yang ditemukan.")
 		}
 
-		sb.WriteString("📰 *Berita Terkini Kompas*\n\n")
+		rb.SetTitle("📰 Berita Terkini Kompas")
 		for i, news := range data.Result {
 			if i >= 10 {
 				break
 			}
-			sb.WriteString(fmt.Sprintf("*%d.* %s\n", i+1, news.Title))
-			sb.WriteString(fmt.Sprintf("└ %s | %s\n\n", news.Category, news.PublishTime))
+			rb.AddText(fmt.Sprintf("*%d.* %s", i+1, news.Title))
+			rb.AddProduct(src.AIProduct{
+				Title:      news.Title,
+				Brand:      news.Category,
+				Price:      news.PublishTime,
+				ProductURL: news.Link,
+				ImageURL:   news.ImageURL,
+			})
 			newSession.NewsURLs = append(newSession.NewsURLs, news.Link)
 		}
 
@@ -140,28 +151,32 @@ func ExecuteKompasSearch(ctx *ContextBot) error {
 			return ctx.Reply(fmt.Sprintf("❌ Tidak ditemukan berita untuk: %s", query))
 		}
 
-		sb.WriteString(fmt.Sprintf("🔍 *Hasil Pencarian Berita: %s*\n\n", strings.ToUpper(query)))
+		rb.SetTitle(fmt.Sprintf("🔍 Hasil Pencarian Berita: %s", strings.ToUpper(query)))
 		for i, news := range data.Result {
 			if i >= 10 {
 				break
 			}
-			sb.WriteString(fmt.Sprintf("*%d.* %s\n", i+1, news.Title))
-			sb.WriteString(fmt.Sprintf("└ %s | %s\n\n", news.Category, news.PublishedDate))
+			rb.AddText(fmt.Sprintf("*%d.* %s", i+1, news.Title))
+			rb.AddProduct(src.AIProduct{
+				Title:      news.Title,
+				Brand:      news.Category,
+				Price:      news.PublishedDate,
+				ProductURL: news.URL,
+				ImageURL:   news.ImageURL,
+			})
 			newSession.NewsURLs = append(newSession.NewsURLs, news.URL)
 		}
 	}
 
-	sb.WriteString("---\nReply pesan ini dengan angka *(1-10)* untuk membaca detail berita.")
-
 	// Kirim list & daftarkan ID pesan ke reply-router
-	msgID, err := ctx.ReplyWithID(sb.String())
-	if err == nil {
-		replyRouter.Register(msgID, "kompas", newSession)
-		_ = ctx.React("✅")
-	} else {
+	msgID, err := rb.SendToChatWithID(ctx)
+	if err != nil {
 		_ = ctx.React("❌")
+		return ctx.Reply("❌ Gagal menampilkan daftar berita.")
 	}
-	return err
+	replyRouter.Register(msgID, "kompas", newSession)
+	_ = ctx.React("✅")
+	return nil
 }
 
 // =============================================

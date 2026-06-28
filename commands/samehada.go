@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"bot-go/src"
 )
 
 // =============================================
@@ -31,11 +33,12 @@ type SamehadaSessionData struct {
 type SamehadaSearchRes struct {
 	Success bool `json:"success"`
 	Result  []struct {
-		Title  string `json:"title"`
-		URL    string `json:"url"`
-		Type   string `json:"type"`
-		Status string `json:"status"`
-		Score  string `json:"score"`
+		Title     string `json:"title"`
+		URL       string `json:"url"`
+		Thumbnail string `json:"thumbnail"`
+		Type      string `json:"type"`
+		Status    string `json:"status"`
+		Score     string `json:"score"`
 	} `json:"result"`
 }
 
@@ -128,28 +131,35 @@ func ExecuteSamehadaSearch(ctx *ContextBot) error {
 		State: "list",
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🔍 *Hasil Pencarian Anime: %s*\n\n", strings.ToUpper(query)))
+	// Tampilan kartu AIRich (dengan gambar) — konsisten dengan `play --all`.
+	rb := src.NewAIRich().
+		SetTitle(fmt.Sprintf("🔍 Hasil Pencarian Anime: %s", strings.ToUpper(query))).
+		SetFooter("Balas dengan NOMOR (1-10) untuk melihat detail anime")
 
 	for i, anime := range data.Result {
 		if i >= 10 {
 			break
 		}
-		sb.WriteString(fmt.Sprintf("*%d.* %s\n", i+1, anime.Title))
-		sb.WriteString(fmt.Sprintf("└ %s | %s | ⭐ %s\n\n", anime.Type, anime.Status, anime.Score))
+		rb.AddText(fmt.Sprintf("*%d.* %s", i+1, anime.Title))
+		rb.AddProduct(src.AIProduct{
+			Title:      anime.Title,
+			Brand:      anime.Type,
+			Price:      anime.Status,
+			SalePrice:  "⭐ " + anime.Score,
+			ProductURL: anime.URL,
+			ImageURL:   anime.Thumbnail,
+		})
 		newSession.AnimeURLs = append(newSession.AnimeURLs, anime.URL)
 	}
 
-	sb.WriteString("---\nReply pesan ini dengan angka (1-10) untuk melihat detail anime.")
-
-	msgID, err := ctx.ReplyWithID(sb.String())
-	if err == nil {
-		replyRouter.Register(msgID, "samehada", newSession)
-		_ = ctx.React("✅")
-	} else {
+	msgID, err := rb.SendToChatWithID(ctx)
+	if err != nil {
 		_ = ctx.React("❌")
+		return ctx.Reply("❌ Gagal menampilkan daftar anime.")
 	}
-	return err
+	replyRouter.Register(msgID, "samehada", newSession)
+	_ = ctx.React("✅")
+	return nil
 }
 
 // =============================================

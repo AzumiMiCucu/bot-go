@@ -145,6 +145,7 @@ func main() {
 	// Mulai scheduler latar belakang
 	src.StartAutoReadScheduler(client)
 	src.StartAutoClearScheduler(client)
+	src.StartReminderScheduler(client)
 	commands.StartReferralScheduler(client)
 
 	c := make(chan os.Signal, 1)

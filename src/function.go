@@ -180,6 +180,25 @@ func ExtractTextMessage(msg *waProto.Message) string {
 		return strings.TrimSpace(msg.ReactionMessage.GetText())
 	case msg.TemplateButtonReplyMessage != nil:
 		return strings.TrimSpace(msg.TemplateButtonReplyMessage.GetSelectedID())
+	case msg.ButtonsResponseMessage != nil:
+		// Tap tombol "buttons" lama → ID tombol yang dipilih.
+		return strings.TrimSpace(msg.ButtonsResponseMessage.GetSelectedButtonID())
+	case msg.ListResponseMessage != nil:
+		// Pilih baris dari list/single-select → ID baris terpilih.
+		return strings.TrimSpace(msg.ListResponseMessage.GetSingleSelectReply().GetSelectedRowID())
+	case msg.InteractiveResponseMessage != nil:
+		// Tap tombol NATIVE FLOW (quick_reply/single_select). ID-nya tersembunyi di
+		// dalam ParamsJSON ({"id":"before"}). Inilah kunci agar tombol bisa diproses
+		// reply-router (tanpa ini, tap tombol jadi pesan kosong & diabaikan handler).
+		nf := msg.InteractiveResponseMessage.GetNativeFlowResponseMessage()
+		if nf != nil {
+			var p struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal([]byte(nf.GetParamsJSON()), &p) == nil {
+				return strings.TrimSpace(p.ID)
+			}
+		}
 	case msg.ProtocolMessage != nil && msg.ProtocolMessage.EditedMessage != nil:
 		em := msg.ProtocolMessage.EditedMessage
 		if r := em.RichResponseMessage; r != nil && len(r.Submessages) > 0 {

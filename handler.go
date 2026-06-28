@@ -264,8 +264,15 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		return
 	}
 
-	// Tidak ada command yang cocok → abaikan (tidak ada lagi fallback AI).
+	// =================================================================
+	// AGEN AI (owner, JAPRI): pesan natural (bukan command) → agen memilih
+	// aksi otomatis (jadwal/tugas/email/catat/nilai/tanya). Hanya di chat
+	// pribadi owner agar grup tidak terganggu.
+	// =================================================================
 	if matchedCommand == nil {
+		if isOwner && !evt.Info.IsGroup && commands.HandleOwnerAgent(ctxBot) {
+			return
+		}
 		return
 	}
 
