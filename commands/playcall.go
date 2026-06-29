@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -137,19 +138,24 @@ func processPlayCall(job playCallJob) {
 		}, src.AndroidExtra())
 	}
 
-	// Unduh audio HANYA SEKALI, di-memo, dan baru dijalankan saat dibutuhkan
-	// (yakni SELAMA BERDERING di dalam StartCallMP3Download). Bila CallClient.Call
-	// di-retry, unduhan tak diulang. Inilah kunci percepatan: tak ada lagi unduh
-	// penuh + tulis file SEBELUM menelepon — dering mulai hampir seketika.
-	var (
-		dlOnce sync.Once
-		dlData []byte
-		dlErr  error
-	)
-	download := func(context.Context) ([]byte, error) {
-		dlOnce.Do(func() { dlData, _, dlErr = fetchSongAudioRetry(job.song, 3) })
-		return dlData, dlErr
+	// Unduh MP3 SEPENUHNYA dulu → tulis ke file temp → BARU telepon. Ini pola lama
+	// yang terbukti tak pernah "tak terjawab" di panggilan pertama: panggilan baru
+	// dimulai SETELAH file MP3 selesai diunduh, jadi tak ada kerja unduh yang berebut
+	// dengan penyiapan panggilan.
+	data, _, dlErr := fetchSongAudioRetry(job.song, 3)
+	if dlErr != nil || len(data) == 0 {
+		send("❌ Gagal mengunduh audio lagu.")
+		return
 	}
+	tmp, err := os.CreateTemp("", "playcall-*.mp3")
+	if err != nil {
+		send("❌ Gagal menyiapkan file audio.")
+		return
+	}
+	tmpPath := tmp.Name()
+	_, _ = tmp.Write(data)
+	tmp.Close()
+	defer os.Remove(tmpPath)
 
 	done := make(chan struct{})
 	var once sync.Once
@@ -172,7 +178,8 @@ func processPlayCall(job playCallJob) {
 		}
 	}
 
-	callID, _, startErr := src.StartCallMP3Download(context.Background(), job.target, download, notify)
+	// Telepon dengan file MP3 yang SUDAH selesai diunduh (pola lama, download-first).
+	callID, _, startErr := src.StartCall(context.Background(), job.target, tmpPath, notify)
 	if startErr != nil {
 		send(fmt.Sprintf("❌ Gagal menelepon: %v", startErr))
 		return
