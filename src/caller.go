@@ -63,28 +63,42 @@ func InitCaller(wa *whatsmeow.Client) {
 // perubahan fase agar command bisa melaporkan progres ke chat.
 // Mengembalikan call-id, JID peer, dan error.
 func StartCall(ctx context.Context, target, audioPath string, notify func(string)) (string, string, error) {
+	var provide AudioProvider
+	if audioPath != "" {
+		// Validasi MURAH lebih dulu (ada file + ekstensi didukung) agar gagal cepat
+		// SEBELUM menelepon. Decode penuh ditunda ke provider (jalan saat berdering).
+		if err := quickValidateCallAudio(audioPath); err != nil {
+			return "", "", err
+		}
+		provide = func(context.Context) (meowcaller.AudioSource, error) {
+			return prepareCallAudio(audioPath)
+		}
+	}
+	return StartCallProvider(ctx, target, provide, notify)
+}
+
+// AudioProvider menyiapkan AudioSource secara asinkron (mis. unduh + decode).
+// Dipanggil SEKALI di background segera setelah panggilan dimulai, sehingga
+// seluruh kerja berat (unduh lagu, decode, olah) menumpang waktu BERDERING dan
+// tak menambah latensi inisiasi. Hasilnya diputar begitu lawan mengangkat.
+type AudioProvider func(ctx context.Context) (meowcaller.AudioSource, error)
+
+// StartCallProvider menelepon target dan memutar audio yang disiapkan oleh
+// provide. Inti percepatan ada di sini: CallClient.Call (dering) dipicu LEBIH DULU,
+// sementara provide() berjalan paralel di background. Saat OnReady (lawan angkat),
+// barulah hasil provide ditunggu — yang praktis sudah selesai selama berdering.
+func StartCallProvider(ctx context.Context, target string, provide AudioProvider, notify func(string)) (string, string, error) {
 	if CallClient == nil {
 		return "", "", fmt.Errorf("subsistem panggilan belum diinisialisasi")
 	}
 
-	// Validasi MURAH lebih dulu (ada file + ekstensi didukung) agar gagal cepat
-	// sebelum menelepon. Decode penuh sengaja DITUNDA & dijalankan asinkron di
-	// bawah agar inisiasi panggilan tetap secepat mungkin.
-	if audioPath != "" {
-		if err := quickValidateCallAudio(audioPath); err != nil {
-			return "", "", err
-		}
-	}
-
-	// Mulai menyiapkan (decode + olah) audio di BACKGROUND sekarang juga. Proses
-	// ini menumpang waktu berdering sehingga latensi decode tak terasa: saat lawan
-	// mengangkat (OnReady), frame sudah siap di memori.
+	// Mulai menyiapkan audio di BACKGROUND sekarang juga (paralel dengan dering).
 	var preparedSrc meowcaller.AudioSource
 	var prepareErr error
 	prepareDone := make(chan struct{})
-	if audioPath != "" {
+	if provide != nil {
 		go func() {
-			preparedSrc, prepareErr = prepareCallAudio(audioPath)
+			preparedSrc, prepareErr = provide(ctx)
 			close(prepareDone)
 		}()
 	} else {
@@ -110,13 +124,17 @@ func StartCall(ctx context.Context, target, audioPath string, notify func(string
 	}
 
 	call.OnReady(func() {
-		if audioPath == "" {
+		if provide == nil {
 			return
 		}
-		// Tunggu hasil decode background (praktis sudah selesai saat lawan mengangkat).
+		// Tunggu hasil penyiapan background (praktis sudah selesai saat lawan mengangkat).
 		<-prepareDone
 		if prepareErr != nil {
-			Print("[CALL] ⚠️ Gagal menyiapkan audio %q: %v", audioPath, prepareErr)
+			Print("[CALL] ⚠️ Gagal menyiapkan audio panggilan: %v", prepareErr)
+			_ = call.Hangup()
+			return
+		}
+		if preparedSrc == nil {
 			return
 		}
 		player := call.Play(preparedSrc)
@@ -134,6 +152,21 @@ func StartCall(ctx context.Context, target, audioPath string, notify func(string
 	})
 
 	return callID, peer, nil
+}
+
+// StartCallMP3Download menelepon target lalu, SELAMA BERDERING, memanggil download
+// untuk mengambil byte MP3 dan menyiapkannya menjadi audio panggilan. Command cukup
+// menyuplai fungsi unduh — seluruh decode/olah + sinkronisasi ke OnReady diurus di
+// sini, dan package commands tak perlu mengenal meowcaller.
+func StartCallMP3Download(ctx context.Context, target string, download func(context.Context) ([]byte, error), notify func(string)) (string, string, error) {
+	provide := func(c context.Context) (meowcaller.AudioSource, error) {
+		data, err := download(c)
+		if err != nil {
+			return nil, err
+		}
+		return prepareCallAudioFromMP3Bytes(data)
+	}
+	return StartCallProvider(ctx, target, provide, notify)
 }
 
 // HangupCall menutup satu panggilan aktif berdasarkan call-id.

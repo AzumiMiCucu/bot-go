@@ -23,6 +23,7 @@
 package src
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
 	"math"
@@ -114,10 +115,29 @@ func prepareCallAudio(path string) (meowcaller.AudioSource, error) {
 		return nil, &audioErr{"audio kosong setelah decode"}
 	}
 
-	// Pengolahan kualitas: high-pass rumble → normalisasi → soft-limiter.
+	return framesFromSamples(samples)
+}
+
+// prepareCallAudioFromMP3Bytes men-decode MP3 LANGSUNG dari memori (tanpa file
+// sementara) lalu mengolahnya jadi frame siap-putar. Dipakai playcall agar byte
+// hasil unduhan tak perlu ditulis & dibaca ulang dari disk → satu langkah I/O hilang.
+func prepareCallAudioFromMP3Bytes(data []byte) (meowcaller.AudioSource, error) {
+	samples, err := decodeMP3Mono16kFrom(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	if len(samples) == 0 {
+		return nil, &audioErr{"audio kosong setelah decode"}
+	}
+	return framesFromSamples(samples)
+}
+
+// framesFromSamples mengolah kualitas PCM 16 kHz lalu memotongnya menjadi frame
+// 960 sampel siap-putar (frame terakhir di-zero-pad).
+func framesFromSamples(samples []float32) (meowcaller.AudioSource, error) {
+	// Pengolahan kualitas: high-pass rumble → band-limit → kompresor → normalisasi → soft-clip.
 	cleanCallSamples(samples)
 
-	// Potong jadi frame 960 sampel (frame terakhir di-zero-pad).
 	frames := make([][]float32, 0, len(samples)/callFrameN+1)
 	for i := 0; i < len(samples); i += callFrameN {
 		end := i + callFrameN
@@ -157,8 +177,13 @@ func decodeMP3Mono16k(path string) ([]float32, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return decodeMP3Mono16kFrom(f)
+}
 
-	dec, err := gomp3.NewDecoder(f)
+// decodeMP3Mono16kFrom adalah inti decode MP3 berbasis io.Reader (dipakai oleh
+// jalur file maupun jalur byte-di-memori).
+func decodeMP3Mono16kFrom(r io.Reader) ([]float32, error) {
+	dec, err := gomp3.NewDecoder(r)
 	if err != nil {
 		return nil, err
 	}
@@ -220,15 +245,26 @@ func resampleMono16k(in []float32, inRate int) []float32 {
 	return out
 }
 
-// cleanCallSamples mengolah sinyal 16 kHz di tempat: buang DC/rumble (high-pass
-// ~90 Hz), normalisasi puncak, lalu soft-limit agar tak meng-overload MLOW.
+// cleanCallSamples mengolah sinyal 16 kHz DI TEMPAT agar "ramah" untuk codec
+// MLOW. PENTING: MLOW adalah codec SUARA (CELP voiced/unvoiced + bitrate rendah,
+// tanpa knob kualitas), jadi musik akan selalu sedikit kasar. Tujuan di sini
+// MEMINIMALKAN kresek, bukan menghilangkan total:
+//
+//	1. High-pass ~120 Hz  → buang rumble/DC yang menyita bit CELP.
+//	2. Low-pass ~6 kHz    → buang treble; di sanalah CELP paling banyak meng-grit.
+//	3. Kompresor 4:1      → ratakan dinamika; bagian keras tak meng-overload codec
+//	                        (overload = sumber kresek terbesar pada musik).
+//	4. Normalisasi ke 0.6 → beri HEADROOM (dulu 0.9 terlalu panas untuk CELP).
+//	5. Soft-clip halus    → jaring pengaman, melengkung mulus tanpa "patah" di 0.95.
+//
+// Konsekuensi sengaja: panggilan jadi sedikit LEBIH PELAN tapi jauh lebih bersih.
 func cleanCallSamples(s []float32) {
 	if len(s) == 0 {
 		return
 	}
 
-	// 1. High-pass satu-kutub ~90 Hz (hilangkan DC & gemuruh sub-bass).
-	hpAlpha := float32(0.985) // ~ rc untuk ~90 Hz @ 16 kHz
+	// 1. High-pass satu-kutub ~120 Hz (hilangkan DC & gemuruh sub-bass).
+	hpAlpha := float32(0.978) // ~ rc untuk ~120 Hz @ 16 kHz
 	var prevIn, prevOut float32
 	for i, x := range s {
 		y := hpAlpha * (prevOut + x - prevIn)
@@ -237,7 +273,14 @@ func cleanCallSamples(s []float32) {
 		s[i] = y
 	}
 
-	// 2. Normalisasi puncak ke 0.9 (level konsisten masuk codec; cegah terlalu pelan).
+	// 2. Low-pass ~6 kHz (Butterworth orde-4): batasi pita agar codec suara tak
+	//    memuntahkan artefak kasar pada frekuensi tinggi yang tak bisa ia modelkan.
+	applyLowpass(s, callRate, 6000, 2)
+
+	// 3. Kompresor dinamis 4:1 → level lebih rata sebelum masuk codec.
+	compressCallDynamics(s)
+
+	// 4. Normalisasi puncak ke 0.6 (beri headroom untuk CELP; cegah terlalu pelan).
 	var peak float32
 	for _, x := range s {
 		a := x
@@ -249,7 +292,7 @@ func cleanCallSamples(s []float32) {
 		}
 	}
 	if peak > 1e-6 {
-		gain := float32(0.9) / peak
+		gain := float32(0.6) / peak
 		if gain > 12 {
 			gain = 12 // batasi penguatan agar bagian senyap tak meledak jadi noise
 		}
@@ -258,10 +301,42 @@ func cleanCallSamples(s []float32) {
 		}
 	}
 
-	// 3. Soft-limiter (tanh) sebagai jaring pengaman terhadap puncak sisa.
+	// 5. Soft-clip halus (tanh dengan drive ringan) di SELURUH sinyal: tak ada
+	//    "patahan" transfer-curve di ±0.95 yang justru menambah distorsi.
+	const drive = float32(1.1)
+	norm := float32(math.Tanh(float64(drive)))
 	for i, x := range s {
-		if x > 0.95 || x < -0.95 {
-			s[i] = float32(math.Tanh(float64(x)))
+		s[i] = float32(math.Tanh(float64(drive*x))) / norm
+	}
+}
+
+// compressCallDynamics menekan dinamika sinyal 16 kHz DI TEMPAT dengan kompresor
+// envelope satu-kutub (rasio ~4:1). Bagian keras musik dilemahkan sehingga tak
+// meng-overload codec CELP MLOW — penyebab kresek terbesar pada playcall musik.
+func compressCallDynamics(s []float32) {
+	const (
+		thresh = float32(0.25)   // di atas ini mulai ditekan
+		ratio  = float32(4.0)    // 4:1
+		atk    = float32(0.02)   // serangan cepat (per-sampel @16 kHz)
+		rel    = float32(0.0006) // pelepasan lambat (hindari "pumping")
+	)
+	invRatio := float64(1.0 / ratio)
+	var env float32
+	for i, x := range s {
+		a := x
+		if a < 0 {
+			a = -a
+		}
+		if a > env {
+			env += atk * (a - env)
+		} else {
+			env += rel * (a - env)
+		}
+		if env > thresh {
+			// gain reduction statis pada envelope: target = thresh*(env/thresh)^(1/ratio)
+			over := float64(env / thresh)
+			target := thresh * float32(math.Pow(over, invRatio))
+			s[i] = x * (target / env)
 		}
 	}
 }

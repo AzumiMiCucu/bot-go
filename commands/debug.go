@@ -7,23 +7,33 @@ import (
 	"regexp"
 	"strings"
 
-	"bot-go/src"
-
 	"github.com/traefik/yaegi/interp"
 	"github.com/traefik/yaegi/stdlib"
 )
 
 // =================================================================
 // EVAL GO (>>) — interpreter Go runtime ala eval Node.js.
-// Owner bisa memanggil variabel & menjalankan fungsi bot secara live.
-// Variabel yang tersedia: Ctx, Client, DB, Config (juga via bot.Ctx dst).
+// Owner bisa memanggil SELURUH fungsi/builder/tipe paket `src` secara live,
+// plus variabel runtime (Ctx, Client). Tabel simbol `src` di-GENERATE otomatis
+// (file bot-go-src.go) — tambah fungsi baru di src lalu jalankan
+// `go generate ./commands/`, langsung tersedia TANPA deklarasi manual.
+//
 //   >> 1+2
 //   >> Ctx.PushName
 //   >> Ctx.Reply("halo dari eval")
-//   >> Config.OwnerName
-//   >> DB.GetUser("628xxxx@s.whatsapp.net")
+//   >> src.NewButton().SetBody("tes").SendToChat(Ctx)
+//   >> src.NewAIRich().SetTitle("Hai").AddText("isi").SendToChat(Ctx)
+//   >> src.YtMp3("https://...")
+//   >> Config.OwnerName        // alias dari src.AppConfig
+//   >> DB.GetUser("628xx@s.whatsapp.net")
 // ( `$` tetap untuk shell command, terpisah dari ini. )
 // =================================================================
+
+// Symbols menampung tabel simbol yang disuntik ke interpreter. File ter-generate
+// (bot-go-src.go) mengisinya lewat init() — JANGAN diisi manual.
+//
+//go:generate go run github.com/traefik/yaegi/cmd/yaegi extract -name commands bot-go/src
+var Symbols = interp.Exports{}
 
 func init() {
 	RegisterCommand(Command{
@@ -47,24 +57,29 @@ func ExecuteEval(ctx *ContextBot) error {
 		return ctx.Reply("❌ Gagal init stdlib: " + err.Error())
 	}
 
-	// Suntik variabel runtime bot ke interpreter (package "bot").
+	// Suntik SELURUH simbol paket `src` (ter-generate otomatis) → semua
+	// fungsi/builder/tipe `src.*` bisa dipanggil langsung di eval.
+	if err := i.Use(Symbols); err != nil {
+		return ctx.Reply("❌ Gagal inject simbol src: " + err.Error())
+	}
+
+	// Suntik variabel RUNTIME (nilai per-panggilan, bukan simbol paket) via "bot".
 	if err := i.Use(interp.Exports{
 		"bot/bot": {
 			"Ctx":    reflect.ValueOf(ctx),
 			"Client": reflect.ValueOf(ctx.Client),
-			"DB":     reflect.ValueOf(src.DB),
-			"Config": reflect.ValueOf(src.AppConfig),
 		},
 	}); err != nil {
 		return ctx.Reply("❌ Gagal inject simbol: " + err.Error())
 	}
 
-	// Buat alias global agar bisa dipanggil langsung (Ctx, DB, ...) — best effort.
+	// Pre-import + alias global agar bisa langsung (src.*, Ctx, DB, Config) — best effort.
+	_, _ = i.Eval(`import "bot-go/src"`)
 	_, _ = i.Eval(`import "bot"`)
 	_, _ = i.Eval(`var Ctx = bot.Ctx`)
 	_, _ = i.Eval(`var Client = bot.Client`)
-	_, _ = i.Eval(`var DB = bot.DB`)
-	_, _ = i.Eval(`var Config = bot.Config`)
+	_, _ = i.Eval(`var DB = src.DB`)
+	_, _ = i.Eval(`var Config = src.AppConfig`)
 
 	v, err := i.Eval(code)
 	if err != nil {
