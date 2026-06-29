@@ -10,11 +10,13 @@ package src
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/purpshell/meowcaller"
 	"github.com/purpshell/meowcaller/signaling"
+	"github.com/rs/zerolog"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
@@ -36,7 +38,22 @@ var (
 // receive-loop berjalan.
 func InitCaller(wa *whatsmeow.Client) {
 	callWA = wa
-	CallClient = meowcaller.NewClient(wa)
+	// DIAGNOSTIK: pasang logger zerolog ke meowcaller. Default library = zerolog.Nop()
+	// (senyap total), sehingga ALASAN PERSIS sebuah panggilan berakhir tak pernah
+	// terlihat. Dengan logger ini, console akan mencetak penyebabnya — mis.
+	//   "call rejected by server" error_code=...  (server WA menolak <offer>)
+	//   "call terminated" reason=...              (server/lawan kirim <terminate>)
+	//   "relay silent after allocate..."          (relay tak pernah membridge media)
+	//   "media ended" err=...                     (handshake DTLS/relay gagal)
+	// Level debug = logging di BOUNDARY saja (bukan per-frame; per-frame ada di trace),
+	// jadi tidak membanjiri log. Set MEOW_CALL_DEBUG=0 untuk mematikan.
+	callLog := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: "15:04:05"}).
+		Level(zerolog.DebugLevel).
+		With().Timestamp().Str("mod", "meowcaller").Logger()
+	if os.Getenv("MEOW_CALL_DEBUG") == "0" {
+		callLog = zerolog.Nop()
+	}
+	CallClient = meowcaller.NewClient(wa, meowcaller.WithLogger(callLog))
 
 	CallClient.OnIncomingCall(func(c *meowcaller.Call) {
 		peer := c.Peer().String()
