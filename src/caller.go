@@ -101,45 +101,42 @@ func StartCall(ctx context.Context, target, audioPath string, notify func(string
 	return StartCallProvider(ctx, target, provide, notify)
 }
 
-// AudioProvider menyiapkan AudioSource secara asinkron (mis. unduh + decode).
-// Dipanggil SEKALI di background segera setelah panggilan dimulai, sehingga
-// seluruh kerja berat (unduh lagu, decode, olah) menumpang waktu BERDERING dan
-// tak menambah latensi inisiasi. Hasilnya diputar begitu lawan mengangkat.
+// AudioProvider menyiapkan AudioSource (mis. unduh + decode lagu). Dipanggil SEKALI
+// dan DITUNGGU sampai selesai SEBELUM panggilan dimulai (lihat StartCallProvider).
 type AudioProvider func(ctx context.Context) (meowcaller.AudioSource, error)
 
-// StartCallProvider menelepon target dan memutar audio yang disiapkan oleh
-// provide. Inti percepatan ada di sini: CallClient.Call (dering) dipicu LEBIH DULU,
-// sementara provide() berjalan paralel di background. Saat OnReady (lawan angkat),
-// barulah hasil provide ditunggu — yang praktis sudah selesai selama berdering.
+// StartCallProvider menyiapkan audio SEPENUHNYA dulu (unduh+decode), baru menelepon.
+//
+// KENAPA bukan "ring-first" (call dulu, siapkan audio paralel): pola itu terbukti
+// membuat panggilan PERTAMA ke tiap target "tak terjawab" seketika. Penyebabnya:
+// unduhan MP3 (bisa beberapa MB) berebut jaringan/CPU dengan handshake relay UDP
+// yang sensitif waktu, sehingga relay tak pernah membridge media lawan → missed.
+// Panggilan kedua lolos hanya karena lagunya sudah ter-unduh (tak ada kontensi).
+// Menyiapkan audio LEBIH DULU menghilangkan kontensi itu sepenuhnya — andal sejak
+// panggilan pertama. Trade-off: dering mulai beberapa detik lebih lambat (selama
+// unduh+decode), tapi panggilan benar-benar tersambung. JANGAN kembali ke ring-first.
 func StartCallProvider(ctx context.Context, target string, provide AudioProvider, notify func(string)) (string, string, error) {
 	if CallClient == nil {
 		return "", "", fmt.Errorf("subsistem panggilan belum diinisialisasi")
 	}
 
-	// Mulai menyiapkan audio di BACKGROUND sekarang juga (paralel dengan dering).
+	// 1. Siapkan audio SEPENUHNYA dulu (unduh + decode). Bila gagal, kembalikan error
+	//    SEBELUM menelepon — tak ada panggilan tergantung tanpa audio.
 	var preparedSrc meowcaller.AudioSource
-	var prepareErr error
-	prepareDone := make(chan struct{})
 	if provide != nil {
-		go func() {
-			preparedSrc, prepareErr = provide(ctx)
-			close(prepareDone)
-		}()
-	} else {
-		close(prepareDone)
+		s, err := provide(ctx)
+		if err != nil {
+			return "", "", fmt.Errorf("siapkan audio panggilan: %w", err)
+		}
+		preparedSrc = s
 	}
 
-	// Prewarm sesi/daftar-device ke target SEBELUM mengirim offer. Optimasi
-	// "ring-first" memanggil terlalu cepat sehingga, pada panggilan PERTAMA ke
-	// sebuah target, sesi Signal/relay ke peer belum matang → offer terbang lebih
-	// dulu dan panggilan tampil "tak terjawab" seketika di HP lawan (pola lama yang
-	// mengunduh dulu tak pernah kena karena unduhan memberi jeda alami). Prewarm
-	// meniru jeda itu secara sengaja & SEKALI per target (lihat prewarmedPeers),
-	// jadi panggilan berikutnya tetap cepat. Best-effort: kegagalan tak fatal.
-	// Penyiapan audio (provide) sudah jalan paralel di atas, jadi waktu prewarm
-	// tidak terbuang.
+	// 2. Prewarm sesi/daftar-device ke target (sekali per target). Aman & cepat;
+	//    melengkapi penyiapan audio di atas dalam menutup celah panggilan pertama.
 	PrewarmCallTarget(ctx, target)
 
+	// 3. Telepon. Audio sudah di tangan → tak ada kerja berat yang berebut dengan
+	//    handshake relay saat panggilan disiapkan.
 	call, err := CallClient.Call(ctx, target)
 	if err != nil {
 		return "", "", err
@@ -152,17 +149,11 @@ func StartCallProvider(ctx context.Context, target string, provide AudioProvider
 	activeCalls[callID] = call
 	callMu.Unlock()
 
-	// Kirim mute_v2 sisi CALLER sekali, saat fase 'connecting'.
-	//
-	// PENTING: logika "callee menunda <accept> sampai mute_v2 caller tiba"
-	// (engine.go onCallRaw) HANYA berlaku bila lawan juga memakai meowcaller
-	// (bot↔bot). Saat menelepon WhatsApp MANUSIA, app WA mereka tak pakai logika
-	// itu. Untuk OUTBOUND, fase 'connecting' dipicu oleh ACK RELAY (bukan oleh
-	// lawan mengangkat), jadi mute_v2 terkirim ~milidetik setelah offer — JAUH
-	// sebelum HP lawan menampilkan panggilan. Mengirim sinyal mid-call sedini itu
-	// membuat sebagian app lawan menandai panggilan sebagai "tak terjawab" seketika.
-	// Karena itu DEFAULT-nya MATI; aktifkan hanya untuk skenario bot↔bot dengan
-	// env MEOW_CALLER_MUTE=1. Best-effort: kegagalan TIDAK mematikan panggilan.
+	// mute_v2 sisi CALLER (default MATI). Logika "callee menunda <accept> sampai
+	// mute_v2 caller tiba" (engine.go onCallRaw) HANYA berlaku bila lawan juga
+	// meowcaller (bot↔bot). Untuk WhatsApp MANUSIA, mengirim sinyal mid-call sedini
+	// fase 'connecting' bisa membuat app lawan menandai "tak terjawab". Aktifkan
+	// hanya untuk bot↔bot via env MEOW_CALLER_MUTE=1. Best-effort & non-fatal.
 	var muteOnce sync.Once
 	call.OnStateChange(func(p meowcaller.CallPhase) {
 		if p == meowcaller.CallPhaseConnecting && os.Getenv("MEOW_CALLER_MUTE") == "1" {
@@ -174,18 +165,6 @@ func StartCallProvider(ctx context.Context, target string, provide AudioProvider
 	})
 
 	call.OnReady(func() {
-		if provide == nil {
-			return
-		}
-		// Tunggu hasil penyiapan background (praktis sudah selesai saat lawan mengangkat).
-		<-prepareDone
-		if prepareErr != nil {
-			// Audio gagal disiapkan (mis. unduh lagu gagal). Tutup rapi; OnEnd akan
-			// melaporkan "berakhir" ke chat (tak perlu notify ganda di sini).
-			Print("[CALL] ⚠️ Gagal menyiapkan audio panggilan: %v", prepareErr)
-			_ = call.Hangup()
-			return
-		}
 		if preparedSrc == nil {
 			return
 		}
@@ -206,10 +185,10 @@ func StartCallProvider(ctx context.Context, target string, provide AudioProvider
 	return callID, peer, nil
 }
 
-// StartCallMP3Download menelepon target lalu, SELAMA BERDERING, memanggil download
-// untuk mengambil byte MP3 dan menyiapkannya menjadi audio panggilan. Command cukup
-// menyuplai fungsi unduh — seluruh decode/olah + sinkronisasi ke OnReady diurus di
-// sini, dan package commands tak perlu mengenal meowcaller.
+// StartCallMP3Download mengambil byte MP3 via download, men-decode+olah jadi audio
+// panggilan, LALU menelepon target (audio disiapkan dulu — lihat StartCallProvider).
+// Command cukup menyuplai fungsi unduh; decode/olah diurus di sini dan package
+// commands tak perlu mengenal meowcaller.
 func StartCallMP3Download(ctx context.Context, target string, download func(context.Context) ([]byte, error), notify func(string)) (string, string, error) {
 	provide := func(c context.Context) (meowcaller.AudioSource, error) {
 		data, err := download(c)
