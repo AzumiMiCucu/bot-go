@@ -110,8 +110,7 @@ func ExecuteSamehadaSearch(ctx *ContextBot) error {
 		return ctx.Reply("⚠️ Format salah.\n\n📌 *Cara pakai:* `anime kimetsu`")
 	}
 
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/finder/samehada?q=%s", url.QueryEscape(query))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
@@ -222,8 +221,7 @@ func handleSamehadaReply(ctx *ContextBot, rc *ReplyContext) error {
 }
 
 func loadSamehadaDetail(ctx *ContextBot, urlStr string) error {
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/samehada?url=%s", url.QueryEscape(urlStr))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
@@ -280,8 +278,7 @@ func loadSamehadaDetail(ctx *ContextBot, urlStr string) error {
 }
 
 func loadSamehadaEpisode(ctx *ContextBot, epURL string, currentEpNum int, epMap map[int]string) error {
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/samehada_eps?url=%s", url.QueryEscape(epURL))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {

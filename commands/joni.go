@@ -25,7 +25,7 @@ func init() {
 	RegisterCommand(Command{
 		Name:        "List Grup",
 		Category:    "Owner",
-		Aliases:     []string{"listgc", "listgroup",},
+		Aliases:     []string{"listgc", "listgroup"},
 		Pattern:     regexp.MustCompile(`(?i)^\s*(listgrup|listgroup|grouplist)\s*$`),
 		Description: "Menampilkan semua grup yang diikuti bot (owner)",
 		Execute:     ExecuteListGroup,
@@ -46,7 +46,7 @@ func ExecuteJoinGroup(ctx *ContextBot) error {
 		code = m[1]
 	}
 
-	_ = ctx.React("⏳")
+	go func() { _ = ctx.React("⏳") }()
 	c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

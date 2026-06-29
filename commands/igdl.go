@@ -35,8 +35,7 @@ func ExecuteIgDownload(ctx *ContextBot) error {
 		return ctx.Reply("⚠️ Tidak menemukan URL Instagram yang valid.\n\nContoh:\n• `igdl https://www.instagram.com/reel/xxxx`\n• `igdl https://www.instagram.com/p/xxxx`")
 	}
 	link := m[1]
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	res, err := src.IgDownload(link)
 	if err != nil {
 		_ = ctx.React("❌")

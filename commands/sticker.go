@@ -34,7 +34,10 @@ func ExecuteSticker(ctx *ContextBot) error {
 		return ctx.Reply("⚠️ Kirim/Balas *gambar, video, stiker,* atau media *sekali lihat* dengan perintah *s*.\n\n📌 *Cara pakai:* `s NamaPack|NamaAuthor` _(opsional)_")
 	}
 
-	_ = ctx.React("⏳")
+	// Reaksi ⏳ dikirim ASINKRON: ack reaksi adalah round-trip ke server WA; bila
+	// ditunggu (blocking) ia menunda mulainya konversi. Fire-and-forget = user tetap
+	// lihat ⏳ tapi konversi langsung jalan.
+	go func() { _ = ctx.React("⏳") }()
 
 	// 2. Tentukan Nama Pack & Author dari Args (opsional: s PackKu|Namaku)
 	packName := "Sticker by"
@@ -166,7 +169,7 @@ func AddExif(webpBytes []byte, packName, author string) []byte {
 
 	// Aktifkan bendera Exif (Bit-3) pada Header VP8X
 	if string(newWebp[12:16]) == "VP8X" {
-		newWebp[20] |= 0x08 
+		newWebp[20] |= 0x08
 	}
 
 	return newWebp

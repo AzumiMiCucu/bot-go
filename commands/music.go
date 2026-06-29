@@ -115,8 +115,7 @@ func ExecutePlay(ctx *ContextBot) error {
 		return ctx.Reply("⚠️ Sebutkan judul lagunya.\n\n📌 *Cara pakai:* `play trouble --all`")
 	}
 
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	songs, err := searchSongs(query)
 	if err != nil || len(songs) == 0 {
 		_ = ctx.React("❌")
@@ -225,8 +224,7 @@ func handleYtMusicReply(ctx *ContextBot, rc *ReplyContext) bool {
 // playSong mengambil audio lalu mengirim metadata + audio playable.
 // useCard=true → kartu AIRich (preview link); false → metadata teks biasa.
 func playSong(ctx *ContextBot, song ytSong, useCard bool) error {
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	mp3Res, err := src.YtMp3(song.URL)
 	if err != nil {
 		return ctx.Reply("❌ Gagal mengambil audio lagu ini.")

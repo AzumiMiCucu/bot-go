@@ -67,14 +67,20 @@ func formatIGNumber(n int) string {
 
 // --- STRUKTUR JSON PENGAMBILAN POST & REELS ---
 type IGEdgeNode struct {
-	Typename           string `json:"__typename"`
-	Shortcode          string `json:"shortcode"`
-	VideoViewCount     int    `json:"video_view_count"`
-	EdgeLikedBy        struct{ Count int `json:"count"` } `json:"edge_liked_by"`
-	EdgeMediaToComment struct{ Count int `json:"count"` } `json:"edge_media_to_comment"`
+	Typename       string `json:"__typename"`
+	Shortcode      string `json:"shortcode"`
+	VideoViewCount int    `json:"video_view_count"`
+	EdgeLikedBy    struct {
+		Count int `json:"count"`
+	} `json:"edge_liked_by"`
+	EdgeMediaToComment struct {
+		Count int `json:"count"`
+	} `json:"edge_media_to_comment"`
 	EdgeMediaToCaption struct {
 		Edges []struct {
-			Node struct{ Text string `json:"text"` } `json:"node"`
+			Node struct {
+				Text string `json:"text"`
+			} `json:"node"`
 		} `json:"edges"`
 	} `json:"edge_media_to_caption"`
 }
@@ -89,9 +95,13 @@ type InflactResponse struct {
 			IsPrivate  bool   `json:"is_private"`
 			IsVerified bool   `json:"is_verified"`
 			ProfilePic string `json:"profile_pic_url_hd"`
-			Followers  struct{ Count int `json:"count"` } `json:"edge_followed_by"`
-			Following  struct{ Count int `json:"count"` } `json:"edge_follow"`
-			Posts      struct {
+			Followers  struct {
+				Count int `json:"count"`
+			} `json:"edge_followed_by"`
+			Following struct {
+				Count int `json:"count"`
+			} `json:"edge_follow"`
+			Posts struct {
 				Count int `json:"count"`
 				Edges []struct {
 					Node IGEdgeNode `json:"node"`
@@ -127,8 +137,7 @@ func ExecuteIGStalk(ctx *ContextBot) error {
 		return ctx.Reply("⚠️ Harap masukkan username Instagram yang ingin dicari.\n\n📌 *Cara pakai:* `igstalk jokowi`")
 	}
 
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	userAgent := "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36"
 	client := &http.Client{Timeout: 25 * time.Second}
 
@@ -258,28 +267,28 @@ func ExecuteIGStalk(ctx *ContextBot) error {
 
 			sb.WriteString(fmt.Sprintf("\n🎬 *%d Postingan/Reels Terbaru:*\n", limit))
 			for i, media := range allMedia[:limit] {
-				
+
 				caption := "Tanpa Caption"
 				if len(media.EdgeMediaToCaption.Edges) > 0 {
 					caption = media.EdgeMediaToCaption.Edges[0].Node.Text
 					// Potong caption agar tidak memenuhi layar
 					if len(caption) > 60 {
 						caption = strings.ReplaceAll(caption, "\n", " ")
-						caption = caption[:57] + "..."
+						caption = responTruncate(caption, 57)
 					}
 				}
 
 				sb.WriteString(fmt.Sprintf("\n*%d. %s*\n", i+1, caption))
-				
+
 				// Instagram hanya memberi tahu views jika tipenya adalah Video
 				if media.Typename == "GraphVideo" {
-					sb.WriteString(fmt.Sprintf("👁️ %s Views | ❤️ %s Likes | 💬 %s Komen\n", 
-						formatIGNumber(media.VideoViewCount), 
+					sb.WriteString(fmt.Sprintf("👁️ %s Views | ❤️ %s Likes | 💬 %s Komen\n",
+						formatIGNumber(media.VideoViewCount),
 						formatIGNumber(media.EdgeLikedBy.Count),
 						formatIGNumber(media.EdgeMediaToComment.Count),
 					))
 				} else {
-					sb.WriteString(fmt.Sprintf("❤️ %s Likes | 💬 %s Komen\n", 
+					sb.WriteString(fmt.Sprintf("❤️ %s Likes | 💬 %s Komen\n",
 						formatIGNumber(media.EdgeLikedBy.Count),
 						formatIGNumber(media.EdgeMediaToComment.Count),
 					))
@@ -298,7 +307,7 @@ func ExecuteIGStalk(ctx *ContextBot) error {
 		if err == nil {
 			defer imgResp.Body.Close()
 			imgBytes, _ := io.ReadAll(imgResp.Body)
-			
+
 			uploaded, errUpload := ctx.Client.Upload(context.Background(), imgBytes, whatsmeow.MediaImage)
 			if errUpload == nil {
 				finalMsg = &waProto.Message{

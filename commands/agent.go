@@ -38,8 +38,15 @@ func init() {
 // HandleOwnerAgent dipanggil handler.go untuk JAPRI owner: setiap pesan natural
 // (bukan command) dialihkan ke agen. Dijalankan asinkron agar tak memblokir.
 // Mengembalikan true bila pesan dikonsumsi.
+//
+// PENTING: hanya pesan ber-TEKS yang dialihkan ke agen. Media polos tanpa teks
+// (mis. stiker/gambar yang dikirim begitu saja) TIDAK diproses otomatis — kalau
+// tidak, SETIAP stiker yang owner kirim akan ikut dianalisa vision Copilot. Untuk
+// menanyai sebuah stiker/gambar, owner memakai perintah eksplisit: reply media lalu
+// `copilot <pertanyaan>` (vision via runCopilot). Gambar BER-CAPTION tetap jalan
+// karena caption mengisi TextMessage.
 func HandleOwnerAgent(ctx *ContextBot) bool {
-	if strings.TrimSpace(ctx.TextMessage) == "" && !aiHasImage(ctx) {
+	if strings.TrimSpace(ctx.TextMessage) == "" {
 		return false
 	}
 	go func() { _ = runAgent(ctx, strings.TrimSpace(ctx.TextMessage)) }()

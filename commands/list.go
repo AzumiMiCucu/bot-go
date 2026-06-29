@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
-	
+
 	"bot-go/src"
 )
 
@@ -17,30 +17,35 @@ func init() {
 		Aliases:     []string{"help", "menu", "list"},
 		Pattern:     regexp.MustCompile(`(?i)^\s*(?:help|menu|list|fitur|bantuan)\s*$`),
 		Description: "Menampilkan daftar keahlian bot",
-	//	Cooldown:    5 * time.Second,
-		Execute:     ExecuteHelpMenu,
+		//	Cooldown:    5 * time.Second,
+		Execute: ExecuteHelpMenu,
 	})
 }
 
 // Hanya fallback karena kita tak ada akses db dari luar
 
-
 func ExecuteHelpMenu(ctx *ContextBot) error {
 	userIsAdmin, _ := isUserAdmin(ctx)
 
-	categories := make(map[string][]Command)
+	categories := make(map[string][]*Command)
 	for _, cmd := range src.CommandRegistry {
 		cat := cmd.Category
 		catLower := strings.ToLower(cat)
 
 		switch catLower {
 		case "owner":
-			if !ctx.IsOwner { continue }
+			if !ctx.IsOwner {
+				continue
+			}
 		case "group":
-			if !userIsAdmin && !ctx.IsOwner { continue }
+			if !userIsAdmin && !ctx.IsOwner {
+				continue
+			}
 		}
 
-		if cat == "System" { continue }
+		if cat == "System" {
+			continue
+		}
 		categories[cat] = append(categories[cat], cmd)
 	}
 
@@ -55,13 +60,21 @@ func ExecuteHelpMenu(ctx *ContextBot) error {
 	}
 
 	var cats []string
-	for c := range categories { cats = append(cats, c) }
+	for c := range categories {
+		cats = append(cats, c)
+	}
 	sort.Slice(cats, func(i, j int) bool {
 		oi, oki := orderMap[cats[i]]
 		oj, okj := orderMap[cats[j]]
-		if !oki { oi = 50 }
-		if !okj { oj = 50 }
-		if oi != oj { return oi < oj }
+		if !oki {
+			oi = 50
+		}
+		if !okj {
+			oj = 50
+		}
+		if oi != oj {
+			return oi < oj
+		}
 		return cats[i] < cats[j]
 	})
 
@@ -73,13 +86,15 @@ func ExecuteHelpMenu(ctx *ContextBot) error {
 		"Kasino":     "🎰",
 		"Group":      "👥",
 		"Owner":      "👑",
-		"Finder": "🔎",
-		"Game" :"🎮",
+		"Finder":     "🔎",
+		"Game":       "🎮",
 		"Lainnya":    "📦",
 	}
 
 	totalCmd := 0
-	for _, cmds := range categories { totalCmd += len(cmds) }
+	for _, cmds := range categories {
+		totalCmd += len(cmds)
+	}
 
 	roleLabel := "👤 User"
 	if ctx.IsOwner {
@@ -98,10 +113,14 @@ func ExecuteHelpMenu(ctx *ContextBot) error {
 
 	for _, cat := range cats {
 		cmds := categories[cat]
-		if len(cmds) == 0 { continue }
-		
+		if len(cmds) == 0 {
+			continue
+		}
+
 		emoji := catEmoji[cat]
-		if emoji == "" { emoji = "📁" }
+		if emoji == "" {
+			emoji = "📁"
+		}
 
 		sb.WriteString(fmt.Sprintf("\n%s *%s*\n", emoji, strings.ToUpper(cat)))
 
@@ -117,7 +136,7 @@ func ExecuteHelpMenu(ctx *ContextBot) error {
 				shown = triggers[:3]
 				suffix = fmt.Sprintf(" _+%d_", len(triggers)-3)
 			}
-			
+
 			// Tambahkan info cooldown (jika ada) ke deskripsi menu
 			cdInfo := ""
 			if cmd.Cooldown > 0 {
@@ -133,16 +152,20 @@ func ExecuteHelpMenu(ctx *ContextBot) error {
 
 	sb.WriteString("\n💡 Ketik kata kunci saja.\n")
 	sb.WriteString("_Contoh:_ `developer`")
-	
+
 	return ctx.Reply(sb.String())
 }
 
 func greeting() string {
 	h := time.Now().UTC().Add(7 * time.Hour).Hour()
 	switch {
-	case h >= 4 && h < 11: return "Selamat pagi"
-	case h >= 11 && h < 15: return "Selamat siang"
-	case h >= 15 && h < 18: return "Selamat sore"
-	default: return "Selamat malam"
+	case h >= 4 && h < 11:
+		return "Selamat pagi"
+	case h >= 11 && h < 15:
+		return "Selamat siang"
+	case h >= 15 && h < 18:
+		return "Selamat sore"
+	default:
+		return "Selamat malam"
 	}
 }

@@ -259,11 +259,15 @@ func ListRespon() []Respon {
 }
 
 // GetResponMedia mengambil byte media sebuah keyword dari DB (lazy, hanya saat terpicu).
+// PENTING: keyword TIDAK boleh di-lowercase. Untuk trigger MEDIA/STIKER kunci berupa
+// "<prefix>:<base64(sha)>" yang CASE-SENSITIVE; melowerkan-nya membuat lookup gagal
+// → media kosong → balasan media-to-media tak terkirim. Keyword teks sudah disimpan
+// lowercase saat AddRespon, jadi cukup di-trim apa adanya.
 func GetResponMedia(keyword string) ([]byte, error) {
 	if responDB == nil {
 		return nil, fmt.Errorf("respon.db belum diinisialisasi")
 	}
-	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	keyword = strings.TrimSpace(keyword)
 	var media []byte
 	err := responDB.QueryRow("SELECT media FROM responses WHERE keyword = ?", keyword).Scan(&media)
 	if err != nil {

@@ -30,8 +30,7 @@ func ExecuteMega(ctx *ContextBot) error {
 	if len(m) == 0 {
 		return ctx.Reply("⚠️ URL Mega tidak valid.\n\nContoh: `mdl https://mega.nz/file/xxxx#key`")
 	}
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	res, err := src.MegaDL(m[1])
 	if err != nil {
 		_ = ctx.React("❌")

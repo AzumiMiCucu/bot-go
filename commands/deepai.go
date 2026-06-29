@@ -58,8 +58,7 @@ func ExecuteDeepAI(ctx *ContextBot) error {
 		return ctx.Reply("❌ Kirim/Balas *gambar* atau *stiker* dengan perintah `deepai <prompt>`.")
 	}
 
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	outURL, err := src.DeepAI(data, "image.jpg", prompt)
 	if err != nil {
 		_ = ctx.React("❌")

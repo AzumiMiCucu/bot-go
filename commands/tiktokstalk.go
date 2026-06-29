@@ -98,8 +98,7 @@ func ExecuteTikTokStalk(ctx *ContextBot) error {
 		return ctx.Reply("⚠️ Masukkan username TikTok.\n\n📌 *Cara pakai:* `ttstalk smanda.cerita`")
 	}
 
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	// 1. Ambil Profil TikTok
 	profileReqBody, _ := json.Marshal(TTProfilePayload{UniqueID: username})
 	profileRaw, err := doTTRequest("https://ttviewer.net/api/tiktok/get-profile", profileReqBody)
@@ -172,7 +171,7 @@ func ExecuteTikTokStalk(ctx *ContextBot) error {
 				for i, v := range videoResp.Data.Videos[:limit] {
 					title := v.Title
 					if len(title) > 60 {
-						title = title[:57] + "..."
+						title = responTruncate(title, 57)
 					} else if title == "" {
 						title = "Tanpa Judul"
 					}
@@ -199,7 +198,7 @@ func ExecuteTikTokStalk(ctx *ContextBot) error {
 		if err == nil {
 			defer imgResp.Body.Close()
 			imgBytes, _ := io.ReadAll(imgResp.Body)
-			
+
 			uploaded, errUpload := ctx.Client.Upload(context.Background(), imgBytes, whatsmeow.MediaImage)
 			if errUpload == nil {
 				finalMsg = &waProto.Message{
@@ -255,7 +254,7 @@ func doTTRequest(url string, payload []byte) ([]byte, error) {
 
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("Accept-Encoding", "gzip, deflate") 
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("origin", "https://ttviewer.net")
 	req.Header.Set("referer", "https://ttviewer.net/")

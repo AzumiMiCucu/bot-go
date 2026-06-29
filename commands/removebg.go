@@ -30,8 +30,7 @@ func ExecuteRemoveBg(ctx *ContextBot) error {
 		return ctx.Reply("⚠️ Kirim/Balas *gambar* (termasuk *sekali lihat*) dengan perintah *removebg*.")
 	}
 
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	out, ctype, err := src.RemoveBg(data, "image.jpg")
 	if err != nil {
 		_ = ctx.React("❌")

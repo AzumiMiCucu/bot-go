@@ -33,9 +33,22 @@ var (
 	reminderEnabled int32 = 1
 	reminderClient  *whatsmeow.Client
 	reminderLoc     = loadJakartaTZ()
-	remindedEvents  = map[string]bool{} // eventID yang sudah diingatkan (di-reset harian)
-	lastBriefDate   string              // "2006-01-02" briefing terakhir
 )
+
+// Dedup reminder DIPERSIST di bot_meta (bukan hanya memori) supaya restart bot —
+// sering terjadi saat testing — TIDAK mengirim ulang briefing pagi / pengingat acara
+// yang sudah dikirim. Key:
+//
+//	reminder:lastbrief        → tanggal "2006-01-02" briefing terakhir terkirim
+//	reminder:event:<eventID>  → penanda acara sudah diingatkan (dibersihkan harian)
+const (
+	metaLastBrief   = "reminder:lastbrief"
+	metaEventPrefix = "reminder:event:"
+)
+
+func eventReminded(id string) bool { return DB.HasMeta(metaEventPrefix + id) }
+func markEventReminded(id string)  { DB.SetMeta(metaEventPrefix+id, "1") }
+func resetDailyDedup()             { DB.DeleteMetaPrefix(metaEventPrefix) }
 
 func loadJakartaTZ() *time.Location {
 	loc, err := time.LoadLocation("Asia/Jakarta")
@@ -98,7 +111,7 @@ func runReminderTick() {
 	if evs, err := cal.Events.List("primary").ShowDeleted(false).SingleEvents(true).
 		TimeMin(tMin).TimeMax(tMax).OrderBy("startTime").Do(); err == nil {
 		for _, e := range evs.Items {
-			if e.Start == nil || e.Start.DateTime == "" || remindedEvents[e.Id] {
+			if e.Start == nil || e.Start.DateTime == "" || eventReminded(e.Id) {
 				continue
 			}
 			st, err := time.Parse(time.RFC3339, e.Start.DateTime)
@@ -107,7 +120,7 @@ func runReminderTick() {
 			}
 			mins := time.Until(st).Minutes()
 			if mins <= float64(reminderLeadMin) && mins >= -2 {
-				remindedEvents[e.Id] = true
+				markEventReminded(e.Id)
 				loc := ""
 				if e.Location != "" {
 					loc = "\n📍 " + e.Location
@@ -118,11 +131,12 @@ func runReminderTick() {
 		}
 	}
 
-	// 2) Briefing pagi sekali sehari (jam 7–11 WIB).
+	// 2) Briefing pagi sekali sehari (jam 7–11 WIB). Dedup via bot_meta agar tahan
+	// restart (testing) — tak akan kirim dua kali di hari yang sama.
 	today := now.In(reminderLoc).Format("2006-01-02")
-	if h := now.In(reminderLoc).Hour(); lastBriefDate != today && h >= reminderBriefHour && h < 12 {
-		lastBriefDate = today
-		remindedEvents = map[string]bool{} // reset dedup harian
+	if h := now.In(reminderLoc).Hour(); DB.GetMeta(metaLastBrief) != today && h >= reminderBriefHour && h < 12 {
+		DB.SetMeta(metaLastBrief, today)
+		resetDailyDedup() // reset penanda acara harian
 		sendMorningBrief(ctx, cal, httpc)
 	}
 }

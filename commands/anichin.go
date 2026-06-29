@@ -115,8 +115,7 @@ func ExecuteDonghuaSearch(ctx *src.ContextBot) error {
 		return err
 	}
 
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/finder/anichin?q=%s", url.QueryEscape(query))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
@@ -226,8 +225,7 @@ func handleDonghuaReply(ctx *ContextBot, rc *ReplyContext) error {
 }
 
 func loadDonghuaDetail(ctx *ContextBot, donghuaURL string) error {
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/anichin?url=%s", url.QueryEscape(donghuaURL))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
@@ -287,8 +285,7 @@ func loadDonghuaDetail(ctx *ContextBot, donghuaURL string) error {
 }
 
 func loadEpisodeDetail(ctx *ContextBot, epURL string, base *DonghuaSessionData) error {
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/anichin_eps?url=%s", url.QueryEscape(epURL))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {

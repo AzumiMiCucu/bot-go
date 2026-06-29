@@ -191,8 +191,8 @@ func downloadCapped(rawURL string, max int64) ([]byte, error) {
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36")
 
-	client := &http.Client{Timeout: 180 * time.Second}
-	resp, err := client.Do(req)
+	// Pakai klien bersama (keep-alive/pooling) — bukan klien baru tiap unduhan.
+	resp, err := src.MediaClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("gagal mengunduh")
 	}

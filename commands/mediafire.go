@@ -30,8 +30,7 @@ func ExecuteMediafire(ctx *ContextBot) error {
 	if len(m) == 0 {
 		return ctx.Reply("⚠️ URL MediaFire tidak valid.\n\nContoh: `mfdl https://www.mediafire.com/file/xxxx/file`")
 	}
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	res, err := src.MediafireDL(m[1])
 	if err != nil {
 		_ = ctx.React("❌")

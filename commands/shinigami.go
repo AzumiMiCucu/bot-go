@@ -106,8 +106,7 @@ func ExecuteShinigamiSearch(ctx *ContextBot) error {
 		return ctx.Reply("⚠️ Format salah.\n\n📌 *Cara pakai:* `manhwa nano machine`")
 	}
 
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/finder/shinigami?q=%s", url.QueryEscape(query))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
@@ -218,8 +217,7 @@ func handleShinigamiReply(ctx *ContextBot, rc *ReplyContext) error {
 }
 
 func loadMangaDetail(ctx *ContextBot, mangaID string) error {
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/shinigami?mangaId=%s", url.QueryEscape(mangaID))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {
@@ -261,7 +259,7 @@ func loadMangaDetail(ctx *ContextBot, mangaID string) error {
 
 	synopsis := info.Description
 	if len(synopsis) > 250 {
-		synopsis = synopsis[:250] + "..."
+		synopsis = responTruncate(synopsis, 250)
 	}
 	sb.WriteString(fmt.Sprintf("*Sinopsis:*\n_%s_\n\n", synopsis))
 	sb.WriteString("*Daftar Chapter:*\n")
@@ -286,7 +284,7 @@ func loadMangaDetail(ctx *ContextBot, mangaID string) error {
 }
 
 func sendChapterButton(ctx *ContextBot, chapterID string, chapterNum string, base *SessionData) error {
-	_ = ctx.React("⏳")
+	go func() { _ = ctx.React("⏳") }()
 	readUrl := fmt.Sprintf("https://ps.azumi.dev/comic?shinigami=%s", chapterID)
 
 	// State navigasi baru (bawa data chapter agar before/after & pemilihan chapter lain tetap bisa)

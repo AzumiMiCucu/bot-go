@@ -92,8 +92,7 @@ func init() {
 func ExecuteKompasSearch(ctx *ContextBot) error {
 	query := strings.TrimSpace(ctx.Args)
 
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	newSession := &KompasSessionData{
 		State: "list",
 	}
@@ -208,8 +207,7 @@ func handleKompasReply(ctx *ContextBot, rc *ReplyContext) error {
 }
 
 func loadKompasDetail(ctx *ContextBot, newsURL string) error {
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	apiUrl := fmt.Sprintf("https://ps.azumi.dev/d/fetcher/kompas?url=%s", url.QueryEscape(newsURL))
 	resp, err := httpClient.Get(apiUrl)
 	if err != nil {

@@ -17,6 +17,31 @@ const BaseURL = "https://ps.azumi.dev"
 // PSBaseURL adalah base URL API pribadi ps.azumi.dev
 const PSBaseURL = "https://ps.azumi.dev"
 
+// sharedTransport dipakai ulang oleh SEMUA klien HTTP bot (API ps.azumi.dev,
+// unduhan media, upload tool). Tujuannya: keep-alive & connection pooling yang
+// agresif agar tidak bayar TLS handshake berulang tiap request media.
+//
+// Default Go (http.DefaultTransport) hanya menyimpan 2 idle-conn PER HOST, jadi
+// burst request ke ps.azumi.dev sering membuka koneksi baru (lambat). Di sini
+// dinaikkan supaya pengiriman media terasa lebih responsif.
+var sharedTransport = &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	MaxIdleConns:          100,
+	MaxIdleConnsPerHost:   16,
+	IdleConnTimeout:       120 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+	ForceAttemptHTTP2:     true,
+}
+
+// APIClient = klien untuk panggilan JSON ke ps.azumi.dev (resolve/cari/AI).
+var APIClient = &http.Client{Timeout: 90 * time.Second, Transport: sharedTransport}
+
+// MediaClient = klien untuk UNDUH/UNGGAH media (timeout lebih panjang). Diekspor
+// agar package commands memakai transport yang sama (downloadCapped, creator, dll)
+// — hindari membuat http.Client/transport baru per panggilan.
+var MediaClient = &http.Client{Timeout: 180 * time.Second, Transport: sharedTransport}
+
 /* API BY @azumimicucu (Translated to Go) */
 
 // FetchPS adalah helper global untuk memanggil endpoint API ps.azumi.dev.
@@ -24,7 +49,7 @@ const PSBaseURL = "https://ps.azumi.dev"
 func FetchPS(endpoint string) (*APIResult, error) {
 	fullURL := PSBaseURL + endpoint
 
-	resp, err := http.Get(fullURL)
+	resp, err := APIClient.Get(fullURL)
 	if err != nil {
 		return nil, fmt.Errorf("gagal request ke ps.azumi.dev: %w", err)
 	}
@@ -45,7 +70,7 @@ func FetchPS(endpoint string) (*APIResult, error) {
 
 // DownloadBytes mengunduh file dari URL apa pun menjadi []byte beserta content-type-nya.
 func DownloadBytes(rawURL string) ([]byte, string, error) {
-	resp, err := http.Get(rawURL)
+	resp, err := MediaClient.Get(rawURL)
 	if err != nil {
 		return nil, "", fmt.Errorf("gagal mengunduh: %w", err)
 	}
@@ -83,7 +108,7 @@ type APIResult struct {
 func fetchAPI(endpoint string) (*APIResult, error) {
 	fullURL := BaseURL + endpoint
 
-	resp, err := http.Get(fullURL)
+	resp, err := APIClient.Get(fullURL)
 	if err != nil {
 		return nil, fmt.Errorf("gagal melakukan request ke API: %w", err)
 	}
@@ -266,7 +291,7 @@ func pickBestIgURL(urls []ssURL) ssURL {
 // mengembalikan BINARY mentah (bukan JSON). Mis. sticker & removebg.
 // =================================================================
 
-var toolHTTP = &http.Client{Timeout: 120 * time.Second}
+var toolHTTP = &http.Client{Timeout: 120 * time.Second, Transport: sharedTransport}
 
 // PostFileTool mengunggah `data` sebagai field multipart "file" ke endpoint tools
 // (mis. "/d/tools/sticker"), menyertakan field teks tambahan (author/pack/dll),

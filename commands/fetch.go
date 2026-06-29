@@ -17,7 +17,7 @@ func init() {
 		Pattern:     regexp.MustCompile(`(?i)^\s*(?:fetch|get)\s+(https?:\/\/[^\s]+)\s*$`),
 		Description: "Fetch HTTP request dengan Custom Headers Android (Khusus Owner)",
 		Execute:     ExecuteFetch,
-		Price: 0.09,
+		Price:       0.09,
 	}) // Menggunakan middleware khusus owner agar aman
 }
 
@@ -30,8 +30,7 @@ func ExecuteFetch(ctx *ContextBot) error {
 	}
 
 	targetUrl := matches[1]
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	req, err := http.NewRequest("GET", targetUrl, nil)
 	if err != nil {
 		_ = ctx.React("❌")
@@ -75,8 +74,6 @@ func ExecuteFetch(ctx *ContextBot) error {
 	if !utf8.ValidString(bodyStr) {
 		bodyStr = strings.ToValidUTF8(bodyStr, "")
 	}
-
-
 
 	_ = ctx.React("✅")
 	return ctx.Reply(bodyStr)

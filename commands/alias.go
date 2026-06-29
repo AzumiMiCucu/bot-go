@@ -22,11 +22,9 @@ var RateLimitMiddleware = src.RateLimitMiddleware
 var OwnerOnlyMiddleware = src.OwnerOnlyMiddleware
 var PremiumOnlyMiddleware = src.PremiumOnlyMiddleware
 var GroupOnlyMiddleware = src.GroupOnlyMiddleware
-var CommandRegistry = src.CommandRegistry
 
 // AndroidExtra → SendRequestExtra ber-ID custom android (untuk semua SendMessage).
 var AndroidExtra = src.AndroidExtra
-
 
 type ButtonBuilder = src.ButtonBuilder
 type SelectionRow = src.SelectionRow

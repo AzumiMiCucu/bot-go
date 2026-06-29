@@ -132,6 +132,12 @@ func (db *Database) createTables() {
 		updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
+	-- KV sederhana untuk state lintas-restart (mis. dedup reminder).
+	CREATE TABLE IF NOT EXISTS bot_meta (
+		k TEXT PRIMARY KEY,
+		v TEXT DEFAULT ''
+	);
+
 	CREATE TABLE IF NOT EXISTS group_trust (
 		groupID TEXT NOT NULL,
 		userID TEXT NOT NULL,
@@ -199,6 +205,45 @@ func (db *Database) createTables() {
 	db.db.Exec("ALTER TABLE group_settings ADD COLUMN goodbyeText TEXT DEFAULT ''")
 	db.db.Exec("ALTER TABLE group_settings ADD COLUMN goodbyeType TEXT DEFAULT 'text'")
 	db.db.Exec("ALTER TABLE group_settings ADD COLUMN goodbyeMedia TEXT DEFAULT ''")
+}
+
+// ===================== KV META (state lintas-restart) =====================
+
+// GetMeta mengembalikan nilai meta untuk key (string kosong bila tak ada).
+func (db *Database) GetMeta(key string) string {
+	if db == nil || db.db == nil {
+		return ""
+	}
+	var v string
+	_ = db.db.QueryRow("SELECT v FROM bot_meta WHERE k = ?", key).Scan(&v)
+	return v
+}
+
+// SetMeta menyimpan (upsert) nilai meta untuk key.
+func (db *Database) SetMeta(key, val string) {
+	if db == nil || db.db == nil {
+		return
+	}
+	db.db.Exec(`INSERT INTO bot_meta (k, v) VALUES (?, ?)
+		ON CONFLICT(k) DO UPDATE SET v = excluded.v`, key, val)
+}
+
+// HasMeta melaporkan apakah sebuah key ada (dipakai untuk dedup boolean).
+func (db *Database) HasMeta(key string) bool {
+	if db == nil || db.db == nil {
+		return false
+	}
+	var one int
+	err := db.db.QueryRow("SELECT 1 FROM bot_meta WHERE k = ?", key).Scan(&one)
+	return err == nil
+}
+
+// DeleteMetaPrefix menghapus semua key dengan prefix tertentu (mis. reset harian).
+func (db *Database) DeleteMetaPrefix(prefix string) {
+	if db == nil || db.db == nil {
+		return
+	}
+	db.db.Exec("DELETE FROM bot_meta WHERE k LIKE ?", prefix+"%")
 }
 
 // autoCleanupCache menghapus data user dari map memori jika tidak aktif > 1 jam

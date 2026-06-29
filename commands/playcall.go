@@ -358,7 +358,7 @@ func ExecutePlayCall(ctx *ContextBot) error {
 		return ctx.Reply("⚠️ Sebutkan judul lagunya.\n\n📌 *Cara pakai:* `playcall despacito`")
 	}
 
-	_ = ctx.React("⏳")
+	go func() { _ = ctx.React("⏳") }()
 	songs, err := searchSongs(query)
 	if err != nil || len(songs) == 0 {
 		_ = ctx.React("❌")

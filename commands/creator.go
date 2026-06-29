@@ -10,7 +10,6 @@ import (
 
 	"bot-go/src"
 
-
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"google.golang.org/protobuf/proto"
@@ -87,8 +86,7 @@ func sendOwnerContact(ctx *ContextBot, ownerNumber, ownerName string, contextInf
 }
 
 func sendCreatorCatalog(ctx *ContextBot, ownerNumber, ownerName string, contextInfo *waProto.ContextInfo) error {
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	imgBytes, err := downloadImage("https://raw.githubusercontent.com/ZidniGz/dbdb/refs/heads/main/ResizedImage_2026-04-30_11-07-49_0538%5B1%5D.jpg")
 	if err != nil {
 		_ = ctx.React("❌")
@@ -137,7 +135,7 @@ func sendCreatorCatalog(ctx *ContextBot, ownerNumber, ownerName string, contextI
 }
 
 func downloadImage(imageURL string) ([]byte, error) {
-	resp, err := http.Get(imageURL)
+	resp, err := src.MediaClient.Get(imageURL)
 	if err != nil {
 		return nil, fmt.Errorf("gagal request: %w", err)
 	}

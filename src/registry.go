@@ -46,13 +46,13 @@ type ContextBot struct {
 	PushName      string
 	UserBalance   float64
 	IsOwner       bool
-	IsGroup bool
+	IsGroup       bool
 	AddBalance    func(float64) float64
 	DeductBalance func(float64) (bool, float64)
 	Reply         func(string) error
 	ReplyWithID   func(string) (string, error)
-	React func(string) error
-	Print          func(data ...interface{})
+	React         func(string) error
+	Print         func(data ...interface{})
 	Ctx           context.Context
 	Button        func() *ButtonBuilder
 }
@@ -75,16 +75,19 @@ type Hook struct {
 // ==========================================
 
 var (
-	CommandRegistry    []Command
-	registryMutex      sync.RWMutex
+	// CommandRegistry menyimpan POINTER ke Command (bukan nilai) supaya:
+	//   • mutex & map cooldown di dalam Command tak pernah dikopi (race-safe);
+	//   • pointer yang dikembalikan RegisterCommand tetap valid walau slice realokasi.
+	CommandRegistry []*Command
+	registryMutex   sync.RWMutex
 
 	// Index command untuk pencocokan cepat (dibangun ulang tiap RegisterCommand)
 	exactAliasMap   = make(map[string]*Command) // alias lower → command (exact match O(1))
 	patternCommands []*Command                  // hanya command yang punya Pattern (regex)
 	prefixEntries   []prefixEntry               // alias non-pattern (untuk prefix match, urut registrasi)
 
-	hooks              = make(map[HookType][]Hook)
-	hooksMutex         sync.RWMutex
+	hooks      = make(map[HookType][]Hook)
+	hooksMutex sync.RWMutex
 )
 
 type prefixEntry struct {
@@ -100,7 +103,7 @@ func rebuildIndex() {
 	prefixEntries = prefixEntries[:0]
 
 	for i := range CommandRegistry {
-		cmd := &CommandRegistry[i]
+		cmd := CommandRegistry[i]
 		if cmd.Pattern != nil {
 			patternCommands = append(patternCommands, cmd)
 		}
@@ -126,9 +129,10 @@ func RegisterCommand(cmd Command) *Command {
 	defer registryMutex.Unlock()
 
 	cmd.LastExecuted = make(map[string]time.Time)
-	CommandRegistry = append(CommandRegistry, cmd)
+	c := &cmd
+	CommandRegistry = append(CommandRegistry, c)
 	rebuildIndex()
-	return &CommandRegistry[len(CommandRegistry)-1]
+	return c
 }
 
 // MatchCommand adalah otak pendeteksi (Classic Prefix-less)
@@ -290,8 +294,9 @@ func ExecuteHooks(hookType HookType, ctx *ContextBot, cmd *Command, err error) e
 	}
 	return nil
 }
+
 // Tambahkan ini di paling bawah file src/registry.go
-func GetCommands() []Command {
+func GetCommands() []*Command {
 	registryMutex.RLock()
 	defer registryMutex.RUnlock()
 	return CommandRegistry

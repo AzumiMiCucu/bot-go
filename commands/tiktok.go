@@ -42,8 +42,7 @@ func ExecuteTikTok(ctx *ContextBot) error {
 	}
 
 	targetUrl := matches[1]
-	_ = ctx.React("⏳")
-
+	go func() { _ = ctx.React("⏳") }()
 	data := url.Values{}
 	data.Set("q", targetUrl)
 	data.Set("cursor", "0")
