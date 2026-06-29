@@ -49,10 +49,13 @@ func eventHandler(evt interface{}) {
 
 	case *events.Disconnected:
 		fmt.Println("[SYSTEM] ⚠️ Koneksi terputus. Menunggu rekoneksi...")
-		// Tutup semua panggilan aktif agar tidak ada media-goroutine yang menggantung.
-		if n := src.HangupAllCalls(); n > 0 {
-			fmt.Printf("[CALL] 🧹 %d panggilan aktif ditutup karena koneksi terputus.\n", n)
-		}
+		// JANGAN tutup panggilan di sini. events.Disconnected sering dipicu SESAAT
+		// oleh whatsmeow (auto-reconnect / stream-replace), termasuk persis ketika
+		// sesi panggilan baru sedang dibangun. Jalur media call berjalan di koneksi
+		// UDP relay yang TERPISAH dari websocket WA, jadi blip websocket sesaat tak
+		// seharusnya mematikan call — menutupnya di sini justru bikin panggilan
+		// "baru mulai langsung mati". Pembersihan call hanya saat shutdown (lihat
+		// akhir main) atau saat panggilan benar-benar di-terminate oleh server.
 
 	case *events.ChatPresence:
 		// Catat aktivitas "mengetik" untuk sinyal anti-bot (bot biasanya kirim

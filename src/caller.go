@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/purpshell/meowcaller"
+	"github.com/purpshell/meowcaller/signaling"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
@@ -117,11 +118,20 @@ func StartCallProvider(ctx context.Context, target string, provide AudioProvider
 	activeCalls[callID] = call
 	callMu.Unlock()
 
-	if notify != nil {
-		call.OnStateChange(func(p meowcaller.CallPhase) {
+	// Kirim mute_v2 sisi CALLER sekali, saat fase 'connecting' (relay+key siap).
+	// Handshake panggilan WA mengharapkan caller mengirim mute_v2 — sisi callee
+	// di meowcaller bahkan MENUNDA <accept>-nya sampai mute_v2 caller tiba (lihat
+	// engine.go onCallRaw + CHANGELOG). Tanpa ini, lawan bisa nyangkut di
+	// "menghubungkan". Best-effort: kegagalan TIDAK mematikan panggilan.
+	var muteOnce sync.Once
+	call.OnStateChange(func(p meowcaller.CallPhase) {
+		if p == meowcaller.CallPhaseConnecting {
+			muteOnce.Do(func() { sendCallerMute(callID, call.Peer()) })
+		}
+		if notify != nil {
 			notify(phaseLabel(p))
-		})
-	}
+		}
+	})
 
 	call.OnReady(func() {
 		if provide == nil {
@@ -130,6 +140,8 @@ func StartCallProvider(ctx context.Context, target string, provide AudioProvider
 		// Tunggu hasil penyiapan background (praktis sudah selesai saat lawan mengangkat).
 		<-prepareDone
 		if prepareErr != nil {
+			// Audio gagal disiapkan (mis. unduh lagu gagal). Tutup rapi; OnEnd akan
+			// melaporkan "berakhir" ke chat (tak perlu notify ganda di sini).
 			Print("[CALL] ⚠️ Gagal menyiapkan audio panggilan: %v", prepareErr)
 			_ = call.Hangup()
 			return
@@ -217,6 +229,30 @@ func phaseLabel(p meowcaller.CallPhase) string {
 	default:
 		return "idle"
 	}
+}
+
+// sendCallerMute mengirim <call><mute_v2 mute-state="false"></call> dari sisi
+// CALLER (bot). Handshake panggilan WA mengharapkan caller mengirim mute_v2;
+// sisi callee menunda <accept>-nya sampai mute_v2 caller tiba. Dipanggil sekali
+// saat fase 'connecting' (relay+key sudah ada). Best-effort & non-fatal: kegagalan
+// hanya dicatat, tidak menutup panggilan.
+func sendCallerMute(callID string, peer types.JID) {
+	if callWA == nil || callID == "" || peer.IsEmpty() {
+		return
+	}
+	self := callWA.Store.GetLID()
+	if self.IsEmpty() {
+		return
+	}
+	node := signaling.BuildMuteV2(callID, peer, self, "false")
+	node.Attrs["id"] = callWA.GenerateMessageID()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := callWA.DangerousInternals().SendNode(ctx, node); err != nil {
+		Print("[CALL] ⚠️ Gagal kirim mute_v2 caller (best-effort): %v", err)
+		return
+	}
+	Print("[CALL] 🔇 mute_v2 caller terkirim (call %s).", callID)
 }
 
 // notifyOwner mengirim notifikasi teks singkat ke owner (best-effort, async-safe).
