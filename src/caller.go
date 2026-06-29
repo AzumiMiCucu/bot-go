@@ -135,14 +135,20 @@ func StartCallProvider(ctx context.Context, target string, provide AudioProvider
 	activeCalls[callID] = call
 	callMu.Unlock()
 
-	// Kirim mute_v2 sisi CALLER sekali, saat fase 'connecting' (relay+key siap).
-	// Handshake panggilan WA mengharapkan caller mengirim mute_v2 — sisi callee
-	// di meowcaller bahkan MENUNDA <accept>-nya sampai mute_v2 caller tiba (lihat
-	// engine.go onCallRaw + CHANGELOG). Tanpa ini, lawan bisa nyangkut di
-	// "menghubungkan". Best-effort: kegagalan TIDAK mematikan panggilan.
+	// Kirim mute_v2 sisi CALLER sekali, saat fase 'connecting'.
+	//
+	// PENTING: logika "callee menunda <accept> sampai mute_v2 caller tiba"
+	// (engine.go onCallRaw) HANYA berlaku bila lawan juga memakai meowcaller
+	// (bot↔bot). Saat menelepon WhatsApp MANUSIA, app WA mereka tak pakai logika
+	// itu. Untuk OUTBOUND, fase 'connecting' dipicu oleh ACK RELAY (bukan oleh
+	// lawan mengangkat), jadi mute_v2 terkirim ~milidetik setelah offer — JAUH
+	// sebelum HP lawan menampilkan panggilan. Mengirim sinyal mid-call sedini itu
+	// membuat sebagian app lawan menandai panggilan sebagai "tak terjawab" seketika.
+	// Karena itu DEFAULT-nya MATI; aktifkan hanya untuk skenario bot↔bot dengan
+	// env MEOW_CALLER_MUTE=1. Best-effort: kegagalan TIDAK mematikan panggilan.
 	var muteOnce sync.Once
 	call.OnStateChange(func(p meowcaller.CallPhase) {
-		if p == meowcaller.CallPhaseConnecting {
+		if p == meowcaller.CallPhaseConnecting && os.Getenv("MEOW_CALLER_MUTE") == "1" {
 			muteOnce.Do(func() { sendCallerMute(callID, call.Peer()) })
 		}
 		if notify != nil {
