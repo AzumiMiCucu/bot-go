@@ -239,11 +239,20 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 	}
 
 	// =================================================================
-	// MODE SELF (per-grup): jika grup ini di-set SELF, hanya owner dilayani
-	// (command & AI). Anti-bot/antilink tetap jalan. Chat pribadi tak terpengaruh.
+	// MODE SELF — scope TERPISAH untuk grup vs chat pribadi:
+	//   • Grup  : per-grup (DEFAULT = SELF). Diubah lewat `self`/`public` di grup.
+	//   • Japri : global PC (DEFAULT = PUBLIC). Diubah lewat `self`/`public` di japri.
+	// Bila SELF, hanya owner dilayani (command/AI/respon). Anti-bot & antilink tetap
+	// jalan (keduanya khusus grup & sudah dijalankan di atas).
 	// =================================================================
-	if evt.Info.IsGroup && !isOwner && src.DB.IsGroupSelf(chatJID.ToNonAD().String()) {
-		return
+	if !isOwner {
+		if evt.Info.IsGroup {
+			if src.DB.IsGroupSelf(chatJID.ToNonAD().String()) {
+				return
+			}
+		} else if src.IsPrivateSelf() {
+			return
+		}
 	}
 
 	// =================================================================

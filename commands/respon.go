@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"bot-go/src"
@@ -225,7 +226,7 @@ func responAddMedia(ctx *ContextBot, arg string) error {
 		label = kind + "-" + shortKeyLabel(key)
 	}
 
-	// Balasan MEDIA dari pesan INI sendiri (yang di-reply = pemicu).
+	// Balasan MEDIA inline (untuk gambar/video yang BISA membawa caption).
 	rtype, data, mime, _ := extractCurrentMedia(ctx)
 	if rtype != "" && len(data) > 0 {
 		if err := src.AddResponFull(key, src.TriggerMedia, label, src.MatchExact, rtype, respText, mime, data, ctx.User); err != nil {
@@ -234,13 +235,24 @@ func responAddMedia(ctx *ContextBot, arg string) error {
 		return ctx.Reply(responMediaSavedMsg(label, kind, rtype))
 	}
 
-	if respText == "" {
-		return ctx.Reply("⚠️ Belum ada balasan.\n\nLampirkan media (caption `respon addmedia [label]`) atau pakai `respon addmedia [label] | <teks>`.")
+	// Balasan TEKS eksplisit.
+	if respText != "" {
+		if err := src.AddResponFull(key, src.TriggerMedia, label, src.MatchExact, src.ResponText, respText, "", nil, ctx.User); err != nil {
+			return ctx.Reply("❌ Gagal menyimpan respon: " + err.Error())
+		}
+		return ctx.Reply(responMediaSavedMsg(label, kind, src.ResponText))
 	}
-	if err := src.AddResponFull(key, src.TriggerMedia, label, src.MatchExact, src.ResponText, respText, "", nil, ctx.User); err != nil {
-		return ctx.Reply("❌ Gagal menyimpan respon: " + err.Error())
-	}
-	return ctx.Reply(responMediaSavedMsg(label, kind, src.ResponText))
+
+	// Tidak ada media inline & tidak ada teks → buka SESI SINGKAT untuk menangkap
+	// media balasan. Perlu karena STIKER & AUDIO tak bisa dikirim bersama caption,
+	// jadi balasannya harus dikirim sebagai pesan terpisah setelah perintah ini.
+	setPendingRespon(ctx, &pendingRespon{
+		key:       key,
+		kind:      kind,
+		label:     label,
+		expiresAt: time.Now().Add(2 * time.Minute),
+	})
+	return ctx.Reply(fmt.Sprintf("📥 *Mode tangkap balasan aktif* (2 menit)\n\n🎯 Pemicu : %s yang kamu reply\n🏷️ Label  : `%s`\n\nSekarang *kirim media balasannya* (stiker/gambar/video/audio) sebagai pesan berikutnya.\nKetik `batal` untuk membatalkan.", kind, label))
 }
 
 func responMediaSavedMsg(label, kind, rtype string) string {
@@ -268,6 +280,84 @@ func shortKeyLabel(key string) string {
 		return "media"
 	}
 	return b.String()
+}
+
+// ================= SESI SINGKAT: tangkap media balasan addmedia =================
+//
+// STIKER & AUDIO tak bisa dikirim bersama caption, sehingga balasan media untuk
+// `respon addmedia` tak selalu bisa dilampirkan langsung pada perintahnya. Maka
+// kita buka sesi singkat: setelah owner menjalankan `respon addmedia`, media yang
+// dia kirim BERIKUTNYA (dalam jendela waktu) dipakai sebagai balasan. Sesi
+// di-key per (chat, user) — hanya owner yang membuatnya.
+
+type pendingRespon struct {
+	key       string // kunci hash media pemicu ("stk:/img:/vid:/aud:<hash>")
+	kind      string // label jenis pemicu (stiker/gambar/…)
+	label     string
+	expiresAt time.Time
+}
+
+var (
+	pendingResponMu    sync.Mutex
+	pendingResponStore = map[string]*pendingRespon{}
+)
+
+func pendingResponID(ctx *ContextBot) string {
+	return ctx.ChatJID.ToNonAD().String() + "|" + ctx.User
+}
+
+func setPendingRespon(ctx *ContextBot, p *pendingRespon) {
+	pendingResponMu.Lock()
+	pendingResponStore[pendingResponID(ctx)] = p
+	pendingResponMu.Unlock()
+}
+
+func getPendingRespon(ctx *ContextBot) (*pendingRespon, bool) {
+	id := pendingResponID(ctx)
+	pendingResponMu.Lock()
+	defer pendingResponMu.Unlock()
+	p, ok := pendingResponStore[id]
+	if !ok {
+		return nil, false
+	}
+	if time.Now().After(p.expiresAt) {
+		delete(pendingResponStore, id)
+		return nil, false
+	}
+	return p, true
+}
+
+func clearPendingRespon(ctx *ContextBot) {
+	pendingResponMu.Lock()
+	delete(pendingResponStore, pendingResponID(ctx))
+	pendingResponMu.Unlock()
+}
+
+// completePendingRespon menyelesaikan sesi tangkap media bila ada & pesan ini
+// membawa media. Mengembalikan true bila pesan dikonsumsi (jangan diproses lagi).
+func completePendingRespon(ctx *ContextBot) bool {
+	p, ok := getPendingRespon(ctx)
+	if !ok {
+		return false
+	}
+	// Batal eksplisit.
+	if strings.EqualFold(strings.TrimSpace(ctx.TextMessage), "batal") {
+		clearPendingRespon(ctx)
+		_ = ctx.Reply("❌ Mode tangkap balasan dibatalkan.")
+		return true
+	}
+	rtype, data, mime, _ := extractCurrentMedia(ctx)
+	if rtype == "" || len(data) == 0 {
+		// Bukan media → biarkan sesi tetap aktif & jangan konsumsi pesan ini.
+		return false
+	}
+	clearPendingRespon(ctx)
+	if err := src.AddResponFull(p.key, src.TriggerMedia, p.label, src.MatchExact, rtype, "", mime, data, ctx.User); err != nil {
+		_ = ctx.Reply("❌ Gagal menyimpan respon: " + err.Error())
+		return true
+	}
+	_ = ctx.Reply(responMediaSavedMsg(p.label, p.kind, rtype))
+	return true
 }
 
 func responStickerSavedMsg(label, rtype string) string {
@@ -461,13 +551,25 @@ func responHelp() string {
 // Mengembalikan true bila sebuah respon dikirim (pesan dikonsumsi). NONAKTIF saat
 // grup dalam mode self (sesuai permintaan: respon berlaku bila bot tidak self).
 func HandleAutoRespon(ctx *ContextBot) bool {
+	// 0) Sesi singkat: tangkap media balasan untuk `respon addmedia`. Dicek paling
+	// awal agar media balasan tak salah dikira pemicu, dan tetap jalan walau belum
+	// ada respon tersimpan sama sekali.
+	if completePendingRespon(ctx) {
+		return true
+	}
 	if src.ResponCount() == 0 {
 		return false
 	}
-	// Mode self (per-grup) → auto-respon dimatikan UNTUK NON-OWNER. Owner tetap
-	// bisa memakai pintasan/respon di grup self.
-	if ctx.IsGroup && !ctx.IsOwner && src.DB.IsGroupSelf(ctx.ChatJID.ToNonAD().String()) {
-		return false
+	// Mode self → auto-respon dimatikan UNTUK NON-OWNER (scope grup vs japri terpisah).
+	// Owner tetap bisa memakai pintasan/respon di mana saja.
+	if !ctx.IsOwner {
+		if ctx.IsGroup {
+			if src.DB.IsGroupSelf(ctx.ChatJID.ToNonAD().String()) {
+				return false
+			}
+		} else if src.IsPrivateSelf() {
+			return false
+		}
 	}
 
 	// 1) Trigger MEDIA (stiker/gambar/video/audio) → cocokkan via hash metadata.

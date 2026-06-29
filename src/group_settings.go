@@ -28,58 +28,58 @@ var (
 	linksetCacheMu sync.RWMutex
 	linksetLoaded  bool
 
-	selfmodeCache   = make(map[string]bool) // groupID -> self mode (true = hanya owner)
-	selfmodeCacheMu sync.RWMutex
-	selfmodeLoaded  bool
+	// grpmode: scope self/public PER-GRUP. DEFAULT GRUP = SELF — jadi cache hanya
+	// menyimpan nilai EKSPLISIT ("self"/"public"); grup tanpa entri dianggap SELF.
+	// Dibutuhkan tri-state (unset/self/public) karena default kini self, beda dari
+	// kolom lama `selfmode` (DEFAULT 0) yang tak bisa membedakan unset vs public.
+	grpmodeCache   = make(map[string]string) // groupID -> "self" | "public"
+	grpmodeCacheMu sync.RWMutex
+	grpmodeLoaded  bool
 )
 
-// loadSelfmodeCache memuat status self/public tiap grup sekali saja.
-func (db *Database) loadSelfmodeCache() {
-	selfmodeCacheMu.Lock()
-	defer selfmodeCacheMu.Unlock()
-	if selfmodeLoaded {
+// loadGrpModeCache memuat mode self/public eksplisit tiap grup sekali saja.
+func (db *Database) loadGrpModeCache() {
+	grpmodeCacheMu.Lock()
+	defer grpmodeCacheMu.Unlock()
+	if grpmodeLoaded {
 		return
 	}
-	rows, err := db.db.Query("SELECT groupID, COALESCE(selfmode,0) FROM group_settings")
+	rows, err := db.db.Query("SELECT groupID, COALESCE(grpmode,'') FROM group_settings")
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
-			var gid string
-			var sm int
-			if rows.Scan(&gid, &sm) == nil && sm == 1 {
-				selfmodeCache[gid] = true
+			var gid, gm string
+			if rows.Scan(&gid, &gm) == nil && gm != "" {
+				grpmodeCache[gid] = gm
 			}
 		}
 	}
-	selfmodeLoaded = true
+	grpmodeLoaded = true
 }
 
 // IsGroupSelf mengembalikan true bila grup dalam mode SELF (hanya owner dilayani).
+// DEFAULT GRUP = SELF: grup hanya PUBLIC bila owner men-set-nya eksplisit.
 func (db *Database) IsGroupSelf(groupID string) bool {
-	db.loadSelfmodeCache()
-	selfmodeCacheMu.RLock()
-	defer selfmodeCacheMu.RUnlock()
-	return selfmodeCache[groupID]
+	db.loadGrpModeCache()
+	grpmodeCacheMu.RLock()
+	defer grpmodeCacheMu.RUnlock()
+	return grpmodeCache[groupID] != "public"
 }
 
-// SetGroupSelf mengatur mode self (true) / public (false) untuk grup.
+// SetGroupSelf mengatur mode self (true) / public (false) untuk grup (eksplisit).
 func (db *Database) SetGroupSelf(groupID string, self bool) {
-	val := 0
-	if self {
-		val = 1
+	mode := "self"
+	if !self {
+		mode = "public"
 	}
 	db.db.Exec(`
-		INSERT INTO group_settings (groupID, selfmode, updatedAt) VALUES (?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(groupID) DO UPDATE SET selfmode=?, updatedAt=CURRENT_TIMESTAMP
-	`, groupID, val, val)
+		INSERT INTO group_settings (groupID, grpmode, updatedAt) VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(groupID) DO UPDATE SET grpmode=?, updatedAt=CURRENT_TIMESTAMP
+	`, groupID, mode, mode)
 
-	selfmodeCacheMu.Lock()
-	if self {
-		selfmodeCache[groupID] = true
-	} else {
-		delete(selfmodeCache, groupID)
-	}
-	selfmodeCacheMu.Unlock()
+	grpmodeCacheMu.Lock()
+	grpmodeCache[groupID] = mode
+	grpmodeCacheMu.Unlock()
 }
 
 // DefaultLinkPattern: pola default yang diblokir saat antilink ON tanpa custom = link grup WA.

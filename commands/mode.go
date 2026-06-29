@@ -18,9 +18,9 @@ func init() {
 		Category:    "Owner",
 		Aliases:     []string{"self", "public"},
 		Pattern:     regexp.MustCompile(`(?i)^\s*(self|public)(?:\s+(help|status|show))?\s*$`),
-		Description: "Atur mode grup INI: public (semua) / self (hanya owner) · help/status",
+		Description: "Atur mode: di grup → grup ini, di japri → chat pribadi · public/self · help/status",
 		Execute:     ExecuteBotMode,
-	}).Use(OwnerOnlyMiddleware).Use(GroupOnlyMiddleware)
+	}).Use(OwnerOnlyMiddleware)
 
 	RegisterCommand(Command{
 		Name:        "Mode Prefix",
@@ -42,7 +42,6 @@ func init() {
 }
 
 func ExecuteBotMode(ctx *ContextBot) error {
-	groupID := ctx.ChatJID.ToNonAD().String()
 	fields := strings.Fields(strings.ToLower(strings.TrimSpace(ctx.TextMessage)))
 	mode, arg := "", ""
 	if len(fields) > 0 {
@@ -51,23 +50,42 @@ func ExecuteBotMode(ctx *ContextBot) error {
 	if len(fields) > 1 {
 		arg = fields[1]
 	}
+	isStatus := arg == "help" || arg == "status" || arg == "show"
 
-	// self/public help|status → tampilkan mode saat ini, jangan men-toggle.
-	if arg == "help" || arg == "status" || arg == "show" {
-		cur := "🌐 PUBLIC (semua member dilayani)"
-		if src.DB.IsGroupSelf(groupID) {
+	// SCOPE GRUP — berlaku hanya untuk grup ini (DEFAULT grup = SELF).
+	if ctx.IsGroup {
+		groupID := ctx.ChatJID.ToNonAD().String()
+		if isStatus {
+			cur := "🌐 PUBLIC (semua member dilayani)"
+			if src.DB.IsGroupSelf(groupID) {
+				cur = "🔒 SELF (hanya owner dilayani)"
+			}
+			return ctx.Reply(fmt.Sprintf(
+				"⚙️ *Mode Grup Ini*\n\nStatus : %s\n", cur))
+		}
+		if mode == "self" {
+			src.DB.SetGroupSelf(groupID, true)
+			return ctx.Reply("🔒 Grup ini → mode *SELF*. Hanya owner yang dilayani di sini.")
+		}
+		src.DB.SetGroupSelf(groupID, false)
+		return ctx.Reply("🌐 Grup ini → mode *PUBLIC*. Semua member dilayani.")
+	}
+
+	// SCOPE CHAT PRIBADI (japri) — berlaku untuk SEMUA japri (DEFAULT = PUBLIC).
+	if isStatus {
+		cur := "🌐 PUBLIC (semua chat pribadi dilayani)"
+		if src.IsPrivateSelf() {
 			cur = "🔒 SELF (hanya owner dilayani)"
 		}
 		return ctx.Reply(fmt.Sprintf(
-			"⚙️ *Mode Grup*\n\nStatus : %s\n\n`self`   → hanya owner\n`public` → semua member\n\n_Anti-bot & antilink tetap jalan di mode self._", cur))
+			"⚙️ *Mode Chat Pribadi*\n\nStatus : %s\n", cur))
 	}
-
 	if mode == "self" {
-		src.DB.SetGroupSelf(groupID, true)
-		return ctx.Reply("🔒 Grup ini → mode *SELF*. Hanya owner yang dilayani di sini.")
+		src.SetPrivateSelf(true)
+		return ctx.Reply("🔒 Chat pribadi → mode *SELF*. Hanya owner yang dilayani di japri.")
 	}
-	src.DB.SetGroupSelf(groupID, false)
-	return ctx.Reply("🌐 Grup ini → mode *PUBLIC*. Semua member dilayani.")
+	src.SetPrivateSelf(false)
+	return ctx.Reply("🌐 Chat pribadi → mode *PUBLIC*. Semua chat pribadi dilayani.")
 }
 
 func ExecutePrefixMode(ctx *ContextBot) error {
@@ -83,10 +101,9 @@ func ExecutePrefixMode(ctx *ContextBot) error {
 		}
 		first := string([]rune(pc)[0])
 		return ctx.Reply(fmt.Sprintf(
-			"⌨️ Mode *PREFIX* aktif.\nNon-owner WAJIB pakai prefix; owner bebas.\nPrefix yang diterima: `%s`\nContoh: `%smenu`",
-			pc, first))
+			"⌨️ Mode *PREFIX* aktif.`"))
 	}
-	return ctx.Reply("⌨️ Mode *NO-PREFIX* aktif. Semua user tanpa prefix.")
+	return ctx.Reply("⌨️ Mode *NO-PREFIX* aktif.")
 }
 
 func ExecuteSetPrefix(ctx *ContextBot) error {

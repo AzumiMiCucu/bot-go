@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"bot-go/src"
+
+	waProto "go.mau.fi/whatsmeow/binary/proto"
 )
 
 // =================================================================
@@ -68,7 +70,7 @@ func runCopilot(ctx *ContextBot) error {
 	if arg == "" && img == nil {
 		return ctx.Reply("🤖 *ASISTEN AI — Copilot*\n\n" +
 			"`copilot <pertanyaan>` — tanya (ingat konteks)\n" +
-			"🖼️ kirim/*reply* gambar + `copilot <pertanyaan>` — analisa gambar (vision)\n" +
+			"🖼️ kirim/*reply* gambar/stiker + `copilot <pertanyaan>` — analisa gambar/stiker (vision)\n" +
 			"`copilot reset` — mulai percakapan baru")
 	}
 	switch strings.ToLower(arg) {
@@ -92,32 +94,58 @@ func runCopilot(ctx *ContextBot) error {
 	return ctx.Reply(text)
 }
 
-// aiExtractImage mengunduh gambar dari pesan ini atau pesan yang di-reply (nil bila tak ada).
-func aiExtractImage(ctx *ContextBot) *src.AIImage {
-	m := src.UnwrapMessage(ctx.Msg.Message)
+// aiMediaAsImage mengunduh GAMBAR atau STIKER dari sebuah pesan menjadi AIImage
+// (untuk vision). Stiker WhatsApp pada dasarnya WebP, jadi bisa ikut dianalisa.
+func aiMediaAsImage(ctx *ContextBot, m *waProto.Message) *src.AIImage {
+	if m == nil {
+		return nil
+	}
 	if im := m.GetImageMessage(); im != nil {
 		if d, err := ctx.Client.Download(context.Background(), im); err == nil && len(d) > 0 {
-			return &src.AIImage{Data: d, Mime: im.GetMimetype()}
+			mime := im.GetMimetype()
+			if mime == "" {
+				mime = "image/jpeg"
+			}
+			return &src.AIImage{Data: d, Mime: mime}
 		}
 	}
-	q := src.UnwrapMessage(ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage())
-	if q != nil {
-		if im := q.GetImageMessage(); im != nil {
-			if d, err := ctx.Client.Download(context.Background(), im); err == nil && len(d) > 0 {
-				return &src.AIImage{Data: d, Mime: im.GetMimetype()}
+	if st := m.GetStickerMessage(); st != nil {
+		if d, err := ctx.Client.Download(context.Background(), st); err == nil && len(d) > 0 {
+			mime := st.GetMimetype()
+			if mime == "" {
+				mime = "image/webp"
 			}
+			return &src.AIImage{Data: d, Mime: mime}
 		}
 	}
 	return nil
 }
 
-// aiHasImage mengecek (tanpa download) apakah pesan menyertakan/me-reply gambar.
+// aiQuotedMessage mengambil pesan yang di-reply (apa pun tipe pembawanya).
+func aiQuotedMessage(ctx *ContextBot) *waProto.Message {
+	ci := extractContextInfo(ctx.Msg.Message)
+	if ci == nil {
+		return nil
+	}
+	return src.UnwrapMessage(ci.GetQuotedMessage())
+}
+
+// aiExtractImage mengunduh gambar/stiker dari pesan ini atau pesan yang di-reply (nil bila tak ada).
+func aiExtractImage(ctx *ContextBot) *src.AIImage {
+	if im := aiMediaAsImage(ctx, src.UnwrapMessage(ctx.Msg.Message)); im != nil {
+		return im
+	}
+	return aiMediaAsImage(ctx, aiQuotedMessage(ctx))
+}
+
+// aiHasImage mengecek (tanpa download) apakah pesan menyertakan/me-reply gambar/stiker.
 func aiHasImage(ctx *ContextBot) bool {
-	if src.UnwrapMessage(ctx.Msg.Message).GetImageMessage() != nil {
+	m := src.UnwrapMessage(ctx.Msg.Message)
+	if m.GetImageMessage() != nil || m.GetStickerMessage() != nil {
 		return true
 	}
-	q := src.UnwrapMessage(ctx.Msg.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage())
-	return q != nil && q.GetImageMessage() != nil
+	q := aiQuotedMessage(ctx)
+	return q != nil && (q.GetImageMessage() != nil || q.GetStickerMessage() != nil)
 }
 
 // runAssistant menjalankan satu provider: parse argumen, tangani `reset`, panggil

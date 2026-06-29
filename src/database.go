@@ -187,6 +187,8 @@ func (db *Database) createTables() {
 	db.db.Exec("ALTER TABLE users ADD COLUMN lastDaily DATETIME")
 	db.db.Exec("ALTER TABLE group_settings ADD COLUMN antilink TEXT DEFAULT ''")
 	db.db.Exec("ALTER TABLE group_settings ADD COLUMN selfmode INTEGER DEFAULT 0")
+	// grpmode: scope self/public per-grup tri-state (''/self/public). Default grup = SELF.
+	db.db.Exec("ALTER TABLE group_settings ADD COLUMN grpmode TEXT DEFAULT ''")
 
 	// Welcome / Goodbye (sambutan & perpisahan grup)
 	db.db.Exec("ALTER TABLE group_settings ADD COLUMN welcome INTEGER DEFAULT 0")

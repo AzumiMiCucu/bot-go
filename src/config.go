@@ -1,4 +1,4 @@
-//src/config.go
+// src/config.go
 package src
 
 import (
@@ -17,8 +17,9 @@ type Configuration struct {
 	ReferralIntervalHours int     `json:"referralIntervalHours"`
 	ReferralReward        float64 `json:"referralReward"`
 
-	// Mode bot
-	BotMode    string `json:"botMode"`    // "public" (default) atau "self" (hanya owner)
+	// Mode bot untuk CHAT PRIBADI (japri). Scope ini TERPISAH dari mode per-grup.
+	// "public" (default) = semua chat pribadi dilayani; "self" = hanya owner.
+	BotMode    string `json:"botMode"`    // "public" (default) atau "self" (hanya owner) — khusus japri
 	PrefixMode bool   `json:"prefixMode"` // false = no-prefix (default), true = wajib prefix
 	PrefixChar string `json:"prefixChar"` // karakter prefix saat PrefixMode aktif (default ".")
 
@@ -64,7 +65,7 @@ func InitConfig() {
 		if err != nil {
 			panic("[ERROR] Gagal membaca config.json: " + err.Error())
 		}
-		
+
 		err = json.Unmarshal(data, &AppConfig)
 		if err != nil {
 			panic("[ERROR] Format config.json salah/error: " + err.Error())
@@ -89,6 +90,26 @@ func InitConfig() {
 
 		fmt.Println("[SYSTEM] Konfigurasi berhasil dimuat.")
 	}
+}
+
+// IsPrivateSelf mengembalikan true bila CHAT PRIBADI (japri) sedang mode SELF
+// (hanya owner dilayani). DEFAULT japri = PUBLIC. Scope ini terpisah dari grup.
+func IsPrivateSelf() bool {
+	return AppConfig != nil && AppConfig.BotMode == "self"
+}
+
+// SetPrivateSelf mengatur mode self (true) / public (false) untuk chat pribadi
+// dan langsung menyimpannya ke config.json.
+func SetPrivateSelf(self bool) {
+	if AppConfig == nil {
+		return
+	}
+	if self {
+		AppConfig.BotMode = "self"
+	} else {
+		AppConfig.BotMode = "public"
+	}
+	_ = SaveConfig()
 }
 
 // SaveConfig menulis kembali AppConfig ke file config.json.
