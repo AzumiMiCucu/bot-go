@@ -10,8 +10,6 @@ package src
 import (
 	"context"
 	"fmt"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -69,11 +67,28 @@ func StartCall(ctx context.Context, target, audioPath string, notify func(string
 		return "", "", fmt.Errorf("subsistem panggilan belum diinisialisasi")
 	}
 
-	// Validasi audio lebih dulu agar gagal cepat sebelum menelepon.
+	// Validasi MURAH lebih dulu (ada file + ekstensi didukung) agar gagal cepat
+	// sebelum menelepon. Decode penuh sengaja DITUNDA & dijalankan asinkron di
+	// bawah agar inisiasi panggilan tetap secepat mungkin.
 	if audioPath != "" {
-		if _, err := openAudio(audioPath); err != nil {
+		if err := quickValidateCallAudio(audioPath); err != nil {
 			return "", "", err
 		}
+	}
+
+	// Mulai menyiapkan (decode + olah) audio di BACKGROUND sekarang juga. Proses
+	// ini menumpang waktu berdering sehingga latensi decode tak terasa: saat lawan
+	// mengangkat (OnReady), frame sudah siap di memori.
+	var preparedSrc meowcaller.AudioSource
+	var prepareErr error
+	prepareDone := make(chan struct{})
+	if audioPath != "" {
+		go func() {
+			preparedSrc, prepareErr = prepareCallAudio(audioPath)
+			close(prepareDone)
+		}()
+	} else {
+		close(prepareDone)
 	}
 
 	call, err := CallClient.Call(ctx, target)
@@ -98,12 +113,13 @@ func StartCall(ctx context.Context, target, audioPath string, notify func(string
 		if audioPath == "" {
 			return
 		}
-		src, err := openAudio(audioPath)
-		if err != nil {
-			Print("[CALL] ⚠️ Gagal membuka audio %q: %v", audioPath, err)
+		// Tunggu hasil decode background (praktis sudah selesai saat lawan mengangkat).
+		<-prepareDone
+		if prepareErr != nil {
+			Print("[CALL] ⚠️ Gagal menyiapkan audio %q: %v", audioPath, prepareErr)
 			return
 		}
-		player := call.Play(src)
+		player := call.Play(preparedSrc)
 		// Tutup call begitu audio habis (one-shot greeting/voicemail).
 		player.OnFinish(func() { _ = call.Hangup() })
 	})
@@ -150,21 +166,6 @@ func ActiveCallCount() int {
 	callMu.Lock()
 	defer callMu.Unlock()
 	return len(activeCalls)
-}
-
-// openAudio memilih dekoder meowcaller sesuai ekstensi file. Semua dekoder
-// otomatis downmix + resample ke 16 kHz mono yang dibutuhkan codec MLOW.
-func openAudio(path string) (meowcaller.AudioSource, error) {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".mp3":
-		return meowcaller.MP3File(path)
-	case ".wav":
-		return meowcaller.WAVFile(path)
-	case ".opus", ".ogg":
-		return meowcaller.OpusFile(path)
-	default:
-		return nil, fmt.Errorf("format audio tidak didukung (pakai .mp3/.wav/.opus): %s", path)
-	}
 }
 
 // phaseLabel memetakan fase call ke label ringkas (meowcaller tak mengekspor String()).

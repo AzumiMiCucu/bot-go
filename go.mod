@@ -7,6 +7,7 @@ require (
 	github.com/bogdanfinn/tls-client v1.15.1
 	github.com/coder/websocket v1.8.14
 	github.com/google/uuid v1.6.0
+	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/mattn/go-sqlite3 v1.14.44
 	github.com/purpshell/meowcaller v0.0.0-20260624070908-656eef01a70e
 	github.com/traefik/yaegi v0.16.1
@@ -37,7 +38,6 @@ require (
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
-	github.com/hajimehoshi/go-mp3 v0.3.4 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect

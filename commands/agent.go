@@ -33,6 +33,41 @@ func init() {
 			return runAgent(ctx, strings.TrimSpace(ctx.Args))
 		},
 	}).Use(OwnerOnlyMiddleware)
+
+	// Toggle auto-agen AI di JAPRI owner. Tidak memengaruhi command eksplisit
+	// `asisten`/`tanya`/`gpt`/`copilot` — hanya jawaban-otomatis pesan natural.
+	RegisterCommand(Command{
+		Name:        "Auto Asisten AI",
+		Category:    "Owner",
+		Aliases:     []string{"aiauto", "asistenauto", "agenauto", "autoai"},
+		Pattern:     regexp.MustCompile(`(?i)^\s*(?:aiauto|asistenauto|agenauto|autoai)\s*(on|off)?\s*$`),
+		Description: "[Owner] Nyalakan/matikan auto-jawab AI di japri (aiauto on|off)",
+		Execute:     ExecuteAIAuto,
+	}).Use(OwnerOnlyMiddleware)
+}
+
+// ExecuteAIAuto menyalakan/mematikan auto-agen AI untuk japri owner.
+func ExecuteAIAuto(ctx *ContextBot) error {
+	arg := strings.ToLower(strings.TrimSpace(ctx.Args))
+
+	if arg == "" {
+		status := "OFF"
+		if src.IsAutoAgentAI() {
+			status = "ON"
+		}
+		return ctx.Reply(fmt.Sprintf("🤖 *Auto-Jawab AI (japri):* %s\n\nGunakan `aiauto on` / `aiauto off`.\nSaat OFF, pesanmu di japri tidak akan dijawab AI otomatis — kamu tetap bisa pakai `asisten <pesan>` / `tanya <pesan>` secara manual.", status))
+	}
+
+	switch arg {
+	case "on":
+		src.SetAutoAgentAI(true)
+		return ctx.Reply("✅ *Auto-Jawab AI AKTIF.* Pesan natural di japri akan dijawab agen otomatis.")
+	case "off":
+		src.SetAutoAgentAI(false)
+		return ctx.Reply("🔕 *Auto-Jawab AI NONAKTIF.* Pesanmu di japri tidak akan dijawab AI. Pakai `asisten <pesan>` bila butuh.")
+	default:
+		return ctx.Reply("⚠️ Pilihan tidak valid. Gunakan `aiauto on` atau `aiauto off`.")
+	}
 }
 
 // HandleOwnerAgent dipanggil handler.go untuk JAPRI owner: setiap pesan natural
@@ -46,6 +81,11 @@ func init() {
 // `copilot <pertanyaan>` (vision via runCopilot). Gambar BER-CAPTION tetap jalan
 // karena caption mengisi TextMessage.
 func HandleOwnerAgent(ctx *ContextBot) bool {
+	// Toggle owner: bila auto-agen dimatikan, biarkan pesan owner lewat tanpa
+	// dijawab AI (owner bisa mengetik bebas / pakai command eksplisit `asisten`).
+	if !src.IsAutoAgentAI() {
+		return false
+	}
 	if strings.TrimSpace(ctx.TextMessage) == "" {
 		return false
 	}

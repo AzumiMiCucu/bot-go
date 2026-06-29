@@ -31,6 +31,13 @@ type Configuration struct {
 	// kecuali chat owner. Tidak menghapus pesan untuk orang lain.
 	AutoClearChat    bool `json:"autoClearChat"`
 	AutoClearMinutes int  `json:"autoClearMinutes"` // default 30
+
+	// Auto-agen AI di JAPRI owner: bila true (default), SETIAP pesan natural owner
+	// di chat pribadi otomatis dialihkan ke agen AI. Bila owner sering hanya ingin
+	// mengetik tanpa dijawab AI, matikan lewat command `aiauto off`.
+	// Pointer agar bisa membedakan "belum diset" (config lama → default ON) dari
+	// "sengaja false".
+	AutoAgentAI *bool `json:"autoAgentAI,omitempty"`
 }
 
 var AppConfig *Configuration
@@ -50,6 +57,7 @@ func InitConfig() {
 		BotMode:               "public",
 		PrefixMode:            false,
 		PrefixChar:            ".",
+		AutoAgentAI:           func() *bool { b := true; return &b }(),
 	}
 
 	// Mengecek apakah file config.json sudah ada
@@ -87,9 +95,32 @@ func InitConfig() {
 		if AppConfig.AutoClearMinutes <= 0 {
 			AppConfig.AutoClearMinutes = 30
 		}
+		if AppConfig.AutoAgentAI == nil {
+			// Config lama tanpa field ini → pertahankan perilaku semula: ON.
+			on := true
+			AppConfig.AutoAgentAI = &on
+		}
 
 		fmt.Println("[SYSTEM] Konfigurasi berhasil dimuat.")
 	}
+}
+
+// IsAutoAgentAI mengembalikan true bila auto-agen AI di japri owner aktif
+// (default ON bila belum pernah diset).
+func IsAutoAgentAI() bool {
+	if AppConfig == nil || AppConfig.AutoAgentAI == nil {
+		return true
+	}
+	return *AppConfig.AutoAgentAI
+}
+
+// SetAutoAgentAI menyalakan/mematikan auto-agen AI di japri owner dan menyimpannya.
+func SetAutoAgentAI(on bool) {
+	if AppConfig == nil {
+		return
+	}
+	AppConfig.AutoAgentAI = &on
+	_ = SaveConfig()
 }
 
 // IsPrivateSelf mengembalikan true bila CHAT PRIBADI (japri) sedang mode SELF

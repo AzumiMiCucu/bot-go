@@ -1,4 +1,4 @@
 database/
 tmp/
 config.json
-src/secret/
+src/secret/google_token.json
