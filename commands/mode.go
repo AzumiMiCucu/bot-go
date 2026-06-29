@@ -99,7 +99,7 @@ func ExecutePrefixMode(ctx *ContextBot) error {
 		if pc == "" {
 			pc = "."
 		}
-		first := string([]rune(pc)[0])
+		//first := string([]rune(pc)[0])
 		return ctx.Reply(fmt.Sprintf(
 			"⌨️ Mode *PREFIX* aktif.`"))
 	}
