@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,11 @@ var (
 
 	callMu      sync.Mutex
 	activeCalls = make(map[string]*meowcaller.Call) // call-id → live call
+
+	// prewarmedPeers menandai LID target yang sesinya sudah "dipanaskan" pada sesi
+	// bot ini, agar prewarm hanya berjalan SEKALI per target (panggilan berikutnya
+	// tetap cepat). Lihat PrewarmCallTarget.
+	prewarmedPeers sync.Map // peerLID string → true
 )
 
 // InitCaller membungkus client whatsmeow dengan stack call meowcaller dan
@@ -122,6 +128,17 @@ func StartCallProvider(ctx context.Context, target string, provide AudioProvider
 	} else {
 		close(prepareDone)
 	}
+
+	// Prewarm sesi/daftar-device ke target SEBELUM mengirim offer. Optimasi
+	// "ring-first" memanggil terlalu cepat sehingga, pada panggilan PERTAMA ke
+	// sebuah target, sesi Signal/relay ke peer belum matang → offer terbang lebih
+	// dulu dan panggilan tampil "tak terjawab" seketika di HP lawan (pola lama yang
+	// mengunduh dulu tak pernah kena karena unduhan memberi jeda alami). Prewarm
+	// meniru jeda itu secara sengaja & SEKALI per target (lihat prewarmedPeers),
+	// jadi panggilan berikutnya tetap cepat. Best-effort: kegagalan tak fatal.
+	// Penyiapan audio (provide) sudah jalan paralel di atas, jadi waktu prewarm
+	// tidak terbuang.
+	PrewarmCallTarget(ctx, target)
 
 	call, err := CallClient.Call(ctx, target)
 	if err != nil {
@@ -276,6 +293,80 @@ func sendCallerMute(callID string, peer types.JID) {
 		return
 	}
 	Print("[CALL] 🔇 mute_v2 caller terkirim (call %s).", callID)
+}
+
+// resolveCallPeerLID menurunkan target (nomor, JID telepon, atau @lid) menjadi LID
+// peer — alamat yang dipakai meowcaller untuk kunci E2E. Mengembalikan (LID, true)
+// bila berhasil. Meniru resolvePeerLID milik meowcaller agar prewarm memanaskan
+// IDENTITAS yang sama persis dengan yang dipakai saat offer (kalau beda, prewarm
+// sia-sia). Best-effort.
+func resolveCallPeerLID(ctx context.Context, target string) (types.JID, bool) {
+	target = strings.TrimSpace(target)
+	if target == "" || callWA == nil {
+		return types.EmptyJID, false
+	}
+	var jid types.JID
+	var err error
+	if strings.ContainsRune(target, '@') {
+		if jid, err = types.ParseJID(target); err != nil {
+			return types.EmptyJID, false
+		}
+	} else {
+		jid = types.NewJID(strings.TrimPrefix(target, "+"), types.DefaultUserServer)
+	}
+	if jid.Server == types.HiddenUserServer {
+		return jid, true // sudah LID
+	}
+	if lid, err := callWA.Store.LIDs.GetLIDForPN(ctx, jid); err == nil && !lid.IsEmpty() {
+		return lid, true
+	}
+	if info, err := callWA.GetUserInfo(ctx, []types.JID{jid}); err == nil {
+		for _, ui := range info {
+			if !ui.LID.IsEmpty() {
+				return ui.LID, true
+			}
+		}
+	}
+	if lid, err := callWA.Store.LIDs.GetLIDForPN(ctx, jid); err == nil && !lid.IsEmpty() {
+		return lid, true
+	}
+	return types.EmptyJID, false
+}
+
+// PrewarmCallTarget memanaskan jalur panggilan ke target SEBELUM offer dikirim:
+// resolusi LID (warm cache), ambil daftar device (usync), lalu prefetch prekey
+// bundle tiap device. Tujuannya menutup celah "panggilan pertama tak terjawab":
+// pada call pertama ke sebuah target, jalur kripto/usync ke peer belum siap dan
+// balapan dengan UI panggilan lawan → tampil missed. Prewarm menyiapkannya lebih
+// dulu, hanya SEKALI per target per sesi (prewarmedPeers), sehingga panggilan
+// berikutnya tetap cepat.
+//
+// AMAN: hanya MENGAMBIL bundle (FetchPreKeys) — tidak meng-enkripsi/menggeser
+// ratchet Signal. Meng-enkripsi-lalu-membuang pesan justru berbahaya: ia memajukan
+// ratchet sisi kita tanpa peer menerima pesan inisiasi, sehingga offer pkmsg
+// berikutnya gagal didekripsi peer. Jadi sengaja TIDAK dilakukan di sini.
+func PrewarmCallTarget(ctx context.Context, target string) {
+	if callWA == nil {
+		return
+	}
+	peerLID, ok := resolveCallPeerLID(ctx, target)
+	if !ok {
+		return
+	}
+	if _, warm := prewarmedPeers.Load(peerLID.String()); warm {
+		return // sudah dipanaskan pada sesi ini
+	}
+
+	devices, err := callWA.GetUserDevices(ctx, []types.JID{peerLID})
+	if err != nil || len(devices) == 0 {
+		return // jangan tandai warm; biar dicoba lagi di panggilan berikutnya
+	}
+	// Prefetch prekey bundle agar enkripsi callKey saat offer tak menunggu round-trip
+	// server. Tidak membangun/menggeser sesi — aman dari desync.
+	callWA.DangerousInternals().FetchPreKeysNoError(ctx, devices)
+
+	prewarmedPeers.Store(peerLID.String(), true)
+	Print("[CALL] 🔥 Prewarm panggilan ke %s (%d device) selesai.", peerLID.String(), len(devices))
 }
 
 // notifyOwner mengirim notifikasi teks singkat ke owner (best-effort, async-safe).

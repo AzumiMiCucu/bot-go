@@ -151,58 +151,96 @@ func processPlayCall(job playCallJob) {
 		return dlData, dlErr
 	}
 
-	done := make(chan struct{})
-	var once sync.Once
-	finish := func() { once.Do(func() { close(done) }) }
+	// Tempatkan panggilan lalu tunggu sampai berakhir. Bila panggilan PERTAMA
+	// berakhir CEPAT tanpa pernah AKTIF (gejala "tak terjawab seketika" karena sesi
+	// ke target belum matang pada panggilan pertama — regresi dari pola ring-first),
+	// ULANGI SEKALI secara diam-diam; percobaan kedua hampir selalu tersambung.
+	// Prewarm (src.PrewarmCallTarget di StartCallProvider) menekan peluang ini, dan
+	// auto-retry adalah jaring pengaman terakhirnya. Unduhan lagu di-memo (download),
+	// jadi TIDAK diunduh ulang antar percobaan.
+	const quickMissWindow = 12 * time.Second
+	connected := false
+	lastReason := ""
 
-	notify := func(label string) {
-		switch {
-		case label == "ringing":
-			send("📲 Berdering...")
-		case label == "active":
-			send("🟢 Tersambung! Memutar lagu...")
-		case strings.HasPrefix(label, "ended"):
-			reason := strings.TrimPrefix(label, "ended:")
-			if reason == "" || reason == "ended" {
-				send("🔴 Panggilan berakhir.")
-			} else {
-				send("🔴 Panggilan berakhir (" + reason + ").")
+	for callAttempt := 1; callAttempt <= 2; callAttempt++ {
+		done := make(chan struct{})
+		var once sync.Once
+		finish := func() { once.Do(func() { close(done) }) }
+		var active int32
+
+		notify := func(label string) {
+			switch {
+			case label == "ringing":
+				send("📲 Berdering...")
+			case label == "active":
+				atomic.StoreInt32(&active, 1)
+				send("🟢 Tersambung! Memutar lagu...")
+			case strings.HasPrefix(label, "ended"):
+				lastReason = strings.TrimPrefix(label, "ended:")
+				finish()
 			}
-			finish()
 		}
+
+		// Retry diam-diam untuk kegagalan INISIASI (offer gagal terkirim), 3x.
+		var callID string
+		var startErr error
+		for attempt := 1; attempt <= 3; attempt++ {
+			callID, _, startErr = src.StartCallMP3Download(context.Background(), job.target, download, notify)
+			if startErr == nil {
+				break
+			}
+			if attempt < 3 {
+				time.Sleep(time.Duration(attempt*2) * time.Second) // backoff diam-diam
+			}
+		}
+		if startErr != nil {
+			send(fmt.Sprintf("❌ Gagal menelepon: %v", startErr))
+			return
+		}
+
+		// Pesan utama dengan TAG MENTION ke tujuan — cukup SEKALI (percobaan pertama).
+		if callAttempt == 1 {
+			msg := fmt.Sprintf("☎️ *Memanggil & memutar lagu...*\n👤 @%s\n🎶 %s — %s",
+				job.mentionNum, job.song.Name, job.song.Artist.Name)
+			if job.song.Duration > 0 {
+				msg += "\n⏱️ " + fmtDuration(job.song.Duration)
+			}
+			msg += "\n🆔 " + callID
+			sendMention(msg)
+		}
+
+		// Tunggu sampai panggilan berakhir (pengaman 10 menit).
+		start := time.Now()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Minute):
+			src.HangupCall(callID)
+		}
+
+		if atomic.LoadInt32(&active) == 1 {
+			connected = true
+			break // tersambung — selesai
+		}
+		// Tak pernah aktif. Bila berakhir CEPAT → "tak terjawab seketika" (cold start):
+		// ulangi sekali. Bila berdering lama lalu tak diangkat → memang tak dijawab,
+		// jangan dering ulang.
+		if callAttempt == 1 && time.Since(start) < quickMissWindow {
+			src.HangupCall(callID) // pastikan sesi sebelumnya bersih sebelum ulang
+			time.Sleep(1500 * time.Millisecond)
+			continue
+		}
+		break
 	}
 
-	// Telepon dengan retry diam-diam (di background, tanpa memberi tahu user).
-	var callID string
-	var startErr error
-	for attempt := 1; attempt <= 3; attempt++ {
-		callID, _, startErr = src.StartCallMP3Download(context.Background(), job.target, download, notify)
-		if startErr == nil {
-			break
+	// Laporan akhir ke chat (satu pesan, di akhir).
+	if connected {
+		if lastReason == "" || lastReason == "ended" {
+			send("🔴 Panggilan berakhir.")
+		} else {
+			send("🔴 Panggilan berakhir (" + lastReason + ").")
 		}
-		if attempt < 3 {
-			time.Sleep(time.Duration(attempt*2) * time.Second) // backoff diam-diam
-		}
-	}
-	if startErr != nil {
-		send(fmt.Sprintf("❌ Gagal menelepon: %v", startErr))
-		return
-	}
-
-	// Pesan utama dengan TAG MENTION ke tujuan.
-	msg := fmt.Sprintf("☎️ *Memanggil & memutar lagu...*\n👤 @%s\n🎶 %s — %s",
-		job.mentionNum, job.song.Name, job.song.Artist.Name)
-	if job.song.Duration > 0 {
-		msg += "\n⏱️ " + fmtDuration(job.song.Duration)
-	}
-	msg += "\n🆔 " + callID
-	sendMention(msg)
-
-	// 3. Tunggu sampai panggilan berakhir (pengaman 10 menit).
-	select {
-	case <-done:
-	case <-time.After(10 * time.Minute):
-		src.HangupCall(callID)
+	} else {
+		send("📵 Panggilan tak terjawab.")
 	}
 }
 
