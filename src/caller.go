@@ -98,24 +98,33 @@ func StartCall(ctx context.Context, target, audioPath string, notify func(string
 // dan DITUNGGU sampai selesai SEBELUM panggilan dimulai (lihat StartCallProvider).
 type AudioProvider func(ctx context.Context) (meowcaller.AudioSource, error)
 
-// StartCallProvider menyiapkan audio (unduh+decode) lalu menelepon target memakai
-// API meowcaller secara LANGSUNG/standar: Call → OnReady Play → OnEnd cleanup.
-// Tanpa orkestrasi tambahan (prewarm/auto-retry/mute) — semua siklus call diserahkan
-// ke library.
+// StartCallProvider menelepon target lalu memutar audio yang disiapkan provide.
+//
+// POLA (terbukti first-call-work, lihat commit bd59b4a): CallClient.Call dipicu
+// LEBIH DULU, dan provide() (DECODE + olah anti-kresek) berjalan di BACKGROUND
+// menumpang waktu berdering; hasilnya ditunggu di OnReady (praktis sudah selesai
+// saat lawan mengangkat). KUNCI: provide HANYA boleh men-DECODE audio yang BYTE-nya
+// SUDAH ADA (file/memori) — TANPA I/O jaringan. Unduhan (mis. MP3 dari internet)
+// WAJIB dilakukan pemanggil SAMPAI SELESAI sebelum StartCallProvider, sebab unduhan
+// jaringan yang berjalan bersamaan dengan handshake relay UDP membuat relay tak
+// pernah membridge → panggilan "tak terjawab" seketika. Decode (CPU) aman dijalankan
+// saat berdering; unduhan (jaringan) TIDAK.
 func StartCallProvider(ctx context.Context, target string, provide AudioProvider, notify func(string)) (string, string, error) {
 	if CallClient == nil {
 		return "", "", fmt.Errorf("subsistem panggilan belum diinisialisasi")
 	}
 
-	// Siapkan audio dulu (unduh + decode). Bila gagal, kembalikan error SEBELUM
-	// menelepon — tak ada panggilan tergantung tanpa audio.
+	// Decode + olah audio di BACKGROUND sekarang juga (paralel dengan dering).
 	var preparedSrc meowcaller.AudioSource
+	var prepareErr error
+	prepareDone := make(chan struct{})
 	if provide != nil {
-		s, err := provide(ctx)
-		if err != nil {
-			return "", "", fmt.Errorf("siapkan audio panggilan: %w", err)
-		}
-		preparedSrc = s
+		go func() {
+			preparedSrc, prepareErr = provide(ctx)
+			close(prepareDone)
+		}()
+	} else {
+		close(prepareDone)
 	}
 
 	call, err := CallClient.Call(ctx, target)
@@ -137,6 +146,16 @@ func StartCallProvider(ctx context.Context, target string, provide AudioProvider
 	}
 
 	call.OnReady(func() {
+		if provide == nil {
+			return
+		}
+		// Tunggu hasil decode background (praktis sudah selesai saat lawan mengangkat).
+		<-prepareDone
+		if prepareErr != nil {
+			Print("[CALL] ⚠️ Gagal menyiapkan audio panggilan: %v", prepareErr)
+			_ = call.Hangup()
+			return
+		}
 		if preparedSrc == nil {
 			return
 		}
@@ -157,16 +176,18 @@ func StartCallProvider(ctx context.Context, target string, provide AudioProvider
 	return callID, peer, nil
 }
 
-// StartCallMP3Download mengambil byte MP3 via download, men-decode+olah jadi audio
-// panggilan, LALU menelepon target (audio disiapkan dulu — lihat StartCallProvider).
-// Command cukup menyuplai fungsi unduh; decode/olah diurus di sini dan package
-// commands tak perlu mengenal meowcaller.
+// StartCallMP3Download mengUNDUH byte MP3 SAMPAI SELESAI dulu, BARU menelepon —
+// unduhan jaringan TIDAK boleh berjalan saat panggilan disiapkan (lihat
+// StartCallProvider: itu memicu "tak terjawab"). Setelah byte di tangan, decode/olah
+// anti-kresek diserahkan ke StartCallProvider (jalan di background saat berdering).
 func StartCallMP3Download(ctx context.Context, target string, download func(context.Context) ([]byte, error), notify func(string)) (string, string, error) {
-	provide := func(c context.Context) (meowcaller.AudioSource, error) {
-		data, err := download(c)
-		if err != nil {
-			return nil, err
-		}
+	// 1. Unduh PENUH dulu (jaringan), sebelum ada panggilan.
+	data, err := download(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	// 2. provide hanya men-DECODE byte yang sudah ada (tanpa jaringan) — aman saat dering.
+	provide := func(context.Context) (meowcaller.AudioSource, error) {
 		return prepareCallAudioFromMP3Bytes(data)
 	}
 	return StartCallProvider(ctx, target, provide, notify)
