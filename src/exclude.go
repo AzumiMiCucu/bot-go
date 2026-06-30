@@ -3,12 +3,16 @@ package src
 import (
 	"context"
 	"fmt"
+	"log"
 	"reflect"
 	"sync"
 	"unsafe"
 
+	groupRecord "go.mau.fi/libsignal/groups/state/record"
+	"go.mau.fi/libsignal/util/keyhelper"
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
@@ -16,38 +20,40 @@ import (
 // =================================================================
 // KIRIM PESAN GRUP DENGAN EXCLUDE RECIPIENTS (setara Baileys sPR / relayMessage{exclude})
 // =================================================================
-// KOREKSI asumsi lama ("exclude tak feasible di whatsmeow"): TERNYATA BISA tanpa fork.
+// MEKANISME SEBENARNYA (diverifikasi dari sumber Baileys messages-send.ts):
 //
-// Mekanisme protokol: server WhatsApp mem-fan-out stanza <message> grup HANYA ke
-// device yang tercantum pada node <participants> di dalam stanza. Konten grup
-// dienkripsi sekali sebagai skmsg (sender-key), tapi ROUTING-nya mengikuti daftar
-// participant. Maka device yang TIDAK ada di daftar itu tak akan dikirimi pesan —
-// persis efek `exclude` / `excludeMe` pada Baileys.
+//  1. Konten grup dienkripsi SEKALI sebagai skmsg (sender-key). Node <enc type=skmsg>
+//     ini SATU di tingkat-atas stanza. Server WA mem-fan-out skmsg ke SEMUA device
+//     anggota grup — TIDAK peduli isi node <participants>.
+//  2. Node <participants> HANYA membawa SenderKeyDistributionMessage (SKDM) =
+//     kunci grup, per-device. Device yang TIDAK menerima SKDM tak bisa dekripsi.
 //
-// whatsmeow membangun node <participants> dari argumen `participants []types.JID`
-// pada (*Client).sendGroup. Method itu unexported, NAMUN dibuka lewat
-// Client.DangerousInternals().SendGroup(...). Jadi: ambil daftar member grup,
-// buang yang ingin di-exclude, panggil SendGroup dengan sisa daftar.
+// Jadi supaya target dapat placeholder "Menunggu pesan ini" (BUKAN teks):
+//   (a) ROTASI sender-key dulu → keyID BARU. Kunci lama yang sudah dipegang target
+//       jadi tak berlaku (sender-key WA ratchet MAJU, tak bisa mundur).
+//   (b) Bagikan SKDM key baru ke semua participant KECUALI target (buang target dari
+//       daftar participant yang dipass ke SendGroup).
+//   → target tetap menerima skmsg (fan-out server) tapi tak punya key baru →
+//     gagal dekripsi → placeholder. Retry-receipt target tak terjawab (jalur ini
+//     skip addRecentMessage) → placeholder MENETAP. Persis perilaku sPR Baileys.
 //
-// Kendala: argumen terakhir SendGroup bertipe `nodeExtraParams` yang UNEXPORTED —
-// tak bisa dinamai dari paket lain, jadi pemanggilan WAJIB lewat reflection. Untuk
-// grup ber-addressing-mode LID, field `addressingMode` di struct itu di-set lewat
-// unsafe (reflection tak bisa men-set field unexported tanpa itu). Reimplementasi
-// penuh sendGroup mustahil karena encoder sender-key (`pbSerializer`) juga
-// unexported — jadi SendGroup-via-reflection adalah satu-satunya jalur sah.
+// whatsmeow tak mengekspos sendGroup, tapi membukanya lewat
+// Client.DangerousInternals().SendGroup(participants, ...). Argumen terakhirnya
+// bertipe unexported (nodeExtraParams) → pemanggilan WAJIB via reflection;
+// field addressingMode di-set lewat unsafe utk grup mode LID.
 // =================================================================
 
-// excludeSendMu menserialkan pemanggilan SendGroup jalur-reflection kita. Jalur
-// normal whatsmeow memakai messageSendLock internal (tak ter-ekspos); mutex ini
-// minimal mencegah dua exclude-send kita sendiri berjalan paralel.
+// ExcludeDebug: bila true, cetak diagnosa ke console (log standar) saat mengirim.
+var ExcludeDebug = true
+
+// excludeSendMu menserialkan rotasi+SendGroup jalur-reflection kita (messageSendLock
+// internal whatsmeow tak ter-ekspos).
 var excludeSendMu sync.Mutex
 
-// SendGroupExcluding mengirim `message` ke grup `chat`, tetapi TIDAK mengirimkannya
-// ke device milik JID pada `exclude` (dan ke device akun sendiri bila excludeMe).
-// Mengembalikan participant-hash (phash) dari server.
-//
-// `exclude` boleh berisi JID dalam bentuk PN (...@s.whatsapp.net) maupun LID
-// (...@lid); keduanya otomatis dipetakan ke bentuk yang dipakai grup.
+// SendGroupExcluding mengirim `message` ke grup `chat`, tetapi target pada `exclude`
+// (dan device akun sendiri bila excludeMe) TIDAK akan bisa membacanya (placeholder).
+// `exclude` boleh PN (...@s.whatsapp.net) maupun LID (...@lid) — keduanya dicocokkan
+// ke anggota grup lewat data GroupInfo (tak bergantung cache LID).
 func SendGroupExcluding(
 	ctx context.Context,
 	client *whatsmeow.Client,
@@ -73,79 +79,84 @@ func SendGroupExcluding(
 		msgID = GenerateAndroidMessageID()
 	}
 
-	di := client.DangerousInternals()
-
-	// 1) Ambil daftar member + addressing mode grup (dari cache; fetch bila perlu).
-	//    gmc bertipe *groupMetaCache (unexported), tapi field Members & AddressingMode
-	//    EXPORTED → boleh diakses langsung meski tipenya tak bisa dinamai.
-	gmc, err := di.GetCachedGroupData(ctx, chat)
+	// 1) GroupInfo = sumber kebenaran. Tiap participant punya .JID (bentuk yang
+	//    dipakai whatsmeow utk kirim), .LID, dan .PhoneNumber → cocokkan target
+	//    dalam bentuk apa pun tanpa bergantung cache LID.
+	gi, err := client.GetGroupInfo(ctx, chat)
 	if err != nil {
-		return "", fmt.Errorf("gagal ambil data grup: %w", err)
+		return "", fmt.Errorf("gagal ambil info grup: %w", err)
 	}
-	members := gmc.Members
-	addrMode := gmc.AddressingMode
-	if len(members) == 0 {
-		return "", fmt.Errorf("daftar member grup kosong")
+	addrMode := gi.AddressingMode
+
+	// 2) Himpunan User target (kumpulkan SEMUA bentuk: apa adanya + User mentah).
+	want := make(map[string]bool)
+	for _, e := range exclude {
+		if u := e.ToNonAD().User; u != "" {
+			want[u] = true
+		}
+	}
+	ownPNUser := client.Store.GetJID().ToNonAD().User
+	ownLIDUser := client.Store.GetLID().ToNonAD().User
+	if excludeMe {
+		if ownPNUser != "" {
+			want[ownPNUser] = true
+		}
+		if ownLIDUser != "" {
+			want[ownLIDUser] = true
+		}
 	}
 
-	// 2) Identitas pengirim sesuai addressing mode grup.
+	// 3) Bangun daftar participant = part.JID semua anggota KECUALI yang cocok target.
+	//    Cocok bila User target == part.JID / part.LID / part.PhoneNumber.
+	participants := make([]types.JID, 0, len(gi.Participants))
+	var excludedUsers []string
+	for _, p := range gi.Participants {
+		hit := want[p.JID.ToNonAD().User] ||
+			(!p.LID.IsEmpty() && want[p.LID.ToNonAD().User]) ||
+			(!p.PhoneNumber.IsEmpty() && want[p.PhoneNumber.ToNonAD().User])
+		if hit {
+			excludedUsers = append(excludedUsers, p.JID.User)
+			continue
+		}
+		participants = append(participants, p.JID)
+	}
+
+	if len(participants) == 0 {
+		return "", fmt.Errorf("semua member ter-exclude, tak ada penerima tersisa")
+	}
+	realExcluded := len(gi.Participants) - len(participants)
+
+	// 4) Identitas pengirim sesuai addressing mode.
 	ownID := client.Store.GetJID()
 	if addrMode == types.AddressingModeLID {
 		ownID = client.Store.GetLID()
 	}
 
-	// 3) Susun himpunan User yang di-exclude. Member grup seragam (semua PN atau
-	//    semua LID), sedangkan JID exclude bisa datang dalam bentuk apa pun, maka
-	//    tiap exclude dipetakan ke KEDUA ruang (PN & LID) agar pasti cocok.
-	excluded := make(map[string]bool)
-	addExclude := func(j types.JID) {
-		j = j.ToNonAD()
-		if j.User == "" {
-			return
+	if ExcludeDebug {
+		log.Printf("[sembunyi] grup=%s mode=%q total_member=%d terkirim=%d ter-exclude=%d (%v) target_diminta=%d excludeMe=%v",
+			chat.User, addrMode, len(gi.Participants), len(participants), realExcluded, excludedUsers, len(exclude), excludeMe)
+		if realExcluded == 0 && (len(exclude) > 0) {
+			log.Printf("[sembunyi] ⚠️ TIDAK ADA target yang cocok dgn anggota grup — target tak akan ter-exclude! Cek bentuk JID target.")
 		}
-		excluded[j.User] = true
-		if lid, e := client.Store.LIDs.GetLIDForPN(ctx, j); e == nil && !lid.IsEmpty() {
-			excluded[lid.ToNonAD().User] = true
-		}
-		if pn, e := client.Store.LIDs.GetPNForLID(ctx, j); e == nil && !pn.IsEmpty() {
-			excluded[pn.ToNonAD().User] = true
-		}
-	}
-	for _, e := range exclude {
-		addExclude(e)
-	}
-	if excludeMe {
-		addExclude(client.Store.GetJID())
-		addExclude(client.Store.GetLID())
 	}
 
-	// 4) Saring member.
-	participants := make([]types.JID, 0, len(members))
-	for _, m := range members {
-		if excluded[m.ToNonAD().User] {
-			continue
-		}
-		participants = append(participants, m)
-	}
-	if len(participants) == 0 {
-		return "", fmt.Errorf("semua member ter-exclude, tak ada penerima tersisa")
-	}
+	excludeSendMu.Lock()
+	defer excludeSendMu.Unlock()
 
-	// 5) ROTASI sender-key bila ada member yang di-exclude.
-	//    INI KUNCI agar target dapat placeholder "Menunggu pesan ini" — BUKAN teks.
-	//    Sebabnya: sender-key WA me-ratchet MAJU. Tanpa rotasi, device yang
-	//    di-exclude tetap punya state key dari pesan sebelumnya & bisa menurunkan
-	//    iterasi skmsg baru → teks tetap terbaca. Dengan mengosongkan sender-key
-	//    tersimpan, SendGroup membuat key BARU (keyID baru), SKDM-nya hanya
-	//    dibagikan ke participant tersisa; target tak punya key baru → gagal
-	//    dekripsi → placeholder. Retry-receipt-nya tak terjawab (kita tak
-	//    addRecentMessage) sehingga placeholder menetap, persis perilaku sPR Baileys.
-	if len(exclude) > 0 {
-		rotateGroupSenderKey(ctx, client, chat)
+	// 5) ROTASI sender-key (wajib agar target yang sudah punya key lama tak bisa baca).
+	if realExcluded > 0 {
+		rotated := rotateGroupSenderKey(ctx, client, chat)
+		if ExcludeDebug {
+			log.Printf("[sembunyi] rotasi sender-key: %v (key diganti baru → target pegang key lama → gagal dekripsi)", rotated)
+		}
 	}
 
 	// 6) Panggil SendGroup lewat reflection (param terakhir bertipe unexported).
-	return callSendGroup(ctx, di, ownID, chat, participants, msgID, message, addrMode)
+	phash, err := callSendGroup(ctx, client.DangerousInternals(), ownID, chat, participants, msgID, message, addrMode)
+	if ExcludeDebug {
+		log.Printf("[sembunyi] SendGroup selesai phash=%q err=%v", phash, err)
+	}
+	return phash, err
 }
 
 // SendSecretText = pembungkus praktis untuk pesan teks.
@@ -161,24 +172,55 @@ func SendSecretText(
 	return SendGroupExcluding(ctx, client, chat, msg, "", exclude, excludeMe)
 }
 
-// rotateGroupSenderKey mengosongkan sender-key BOT untuk grup tsb di store, agar
-// SendGroup berikutnya menghasilkan sender-key BARU (lihat groups.SessionBuilder.
-// Create: key baru dibuat saat record kosong). whatsmeow memakai senderKeyName =
-// (group=chat.String(), sender=ownLID.SignalAddress()) — kita kosongkan baris itu.
+// rotateGroupSenderKey MENGGANTI sender-key BOT utk grup tsb dengan key BARU
+// (keyID baru, iterasi 0). whatsmeow memakai senderKeyName =
+// (group=chat.String(), sender=ownLID.SignalAddress()) — kita timpa baris itu.
 //
-// Efek samping wajar: seluruh member (yang tak di-exclude) menerima SKDM key baru
-// pada pesan ini juga, jadi mereka tetap bisa baca. Pesan normal berikutnya akan
-// memakai ulang key baru ini (re-distribusi ke semua), tapi target tetap tak bisa
-// membaca pesan tersembunyi karena ratchet maju (tak bisa mundur ke iterasi awal).
-func rotateGroupSenderKey(ctx context.Context, client *whatsmeow.Client, chat types.JID) {
-	ownLID := client.Store.GetLID()
-	if ownLID.IsEmpty() || client.Store.SenderKeys == nil {
-		return
+// CATATAN: kolom sender_key di DB ber-constraint NOT NULL, jadi TAK BISA di-set
+// NULL (percobaan lama gagal). Solusinya: bangun SenderKey record SAH yang baru
+// (persis seperti groups.SessionBuilder.Create) lalu simpan Serialize()-nya.
+// SendGroup berikut memuat record ini (non-kosong) → memakai key baru ini →
+// SKDM key baru dibagikan ke participant tersisa; target hanya pegang key LAMA
+// (keyID beda) → gagal dekripsi → placeholder.
+func rotateGroupSenderKey(ctx context.Context, client *whatsmeow.Client, chat types.JID) bool {
+	if client.Store.SenderKeys == nil {
+		return false
 	}
-	senderAddr := ownLID.SignalAddress().String()
-	// session=nil → kolom sender_key di-set NULL → GetSenderKey balik nil →
-	// LoadSenderKey balik record kosong → Create generate key baru.
-	_ = client.Store.SenderKeys.PutSenderKey(ctx, chat.String(), senderAddr, nil)
+	// whatsmeow SELALU pakai getOwnLID() utk senderKeyName grup (lihat sendGroup).
+	sender := client.Store.GetLID()
+	if sender.IsEmpty() {
+		// Fallback: sebagian sesi lama mungkin tak punya LID. Coba PN juga.
+		sender = client.Store.GetJID()
+	}
+	if sender.IsEmpty() {
+		return false
+	}
+	groupID := chat.String()
+	addr := sender.SignalAddress().String()
+
+	signingKey, err := keyhelper.GenerateSenderSigningKey()
+	if err != nil {
+		if ExcludeDebug {
+			log.Printf("[sembunyi] gagal generate signing key: %v", err)
+		}
+		return false
+	}
+	rec := groupRecord.NewSenderKey(
+		store.SignalProtobufSerializer.SenderKeyRecord,
+		store.SignalProtobufSerializer.SenderKeyState,
+	)
+	rec.SetSenderKeyState(
+		keyhelper.GenerateSenderKeyID(), 0,
+		keyhelper.GenerateSenderKey(),
+		signingKey,
+	)
+	if err := client.Store.SenderKeys.PutSenderKey(ctx, groupID, addr, rec.Serialize()); err != nil {
+		if ExcludeDebug {
+			log.Printf("[sembunyi] gagal simpan sender-key baru: %v", err)
+		}
+		return false
+	}
+	return true
 }
 
 // callSendGroup memanggil (*DangerousInternalClient).SendGroup via reflection dan
@@ -218,14 +260,12 @@ func callSendGroup(
 	extra := reflect.New(mt.In(7)).Elem()
 	if addrMode != "" {
 		if f := extra.FieldByName("addressingMode"); f.IsValid() {
-			// Field unexported → tembus pakai unsafe agar bisa di-set.
 			reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).
 				Elem().
 				Set(reflect.ValueOf(addrMode))
 		}
 	}
 
-	excludeSendMu.Lock()
 	out := method.Call([]reflect.Value{
 		reflect.ValueOf(ctx),
 		reflect.ValueOf(ownID),
@@ -236,7 +276,6 @@ func callSendGroup(
 		reflect.ValueOf(&whatsmeow.MessageDebugTimings{}),
 		extra,
 	})
-	excludeSendMu.Unlock()
 
 	phash, _ = out[0].Interface().(string)
 	if ev := out[2].Interface(); ev != nil {
