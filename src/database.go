@@ -45,6 +45,12 @@ type DailyStat struct {
 	Message int
 }
 
+// KindStat = jumlah pesan untuk satu jenis (text/image/video/...).
+type KindStat struct {
+	Kind  string
+	Count int
+}
+
 var DB *Database
 
 func InitDatabase() {
@@ -173,6 +179,17 @@ func (db *Database) createTables() {
 	);
 	CREATE INDEX IF NOT EXISTS idx_groupstatsdaily_date ON group_stats_daily(statDate);
 	CREATE INDEX IF NOT EXISTS idx_groupstatsdaily_group ON group_stats_daily(groupID);
+
+	-- Breakdown JENIS pesan per (grup, user, tanggal) → text/image/video/voice/dll.
+	CREATE TABLE IF NOT EXISTS group_msg_kinds (
+		groupID  TEXT NOT NULL,
+		userId   TEXT NOT NULL,
+		statDate DATE NOT NULL,
+		kind     TEXT NOT NULL,
+		count    INTEGER DEFAULT 0,
+		PRIMARY KEY (groupID, userId, statDate, kind)
+	);
+	CREATE INDEX IF NOT EXISTS idx_groupkinds_groupdate ON group_msg_kinds(groupID, statDate);
 	
 	CREATE INDEX IF NOT EXISTS idx_groupstats_group ON group_stats(groupID);
 	CREATE INDEX IF NOT EXISTS idx_groupstats_lastActive ON group_stats(lastActive);
@@ -702,6 +719,72 @@ func (db *Database) AddGroupStat(groupID, userID string, isMedia bool, wordCount
 		ON CONFLICT(groupID, userId, statDate, statHour) DO UPDATE SET
 			messageCount = messageCount + 1, mediaCount = mediaCount + ?, wordCount = wordCount + ?
 	`, groupID, userID, currentDate, currentHour, mediaInc, wordCount, mediaInc, wordCount)
+}
+
+// AddGroupKind menambah hitungan satu jenis pesan untuk (grup, user) hari ini.
+// Async (tak memblokir hot-path), pola sama dengan AddGroupStat.
+func (db *Database) AddGroupKind(groupID, userID, kind string) {
+	if kind == "" {
+		return
+	}
+	currentDate := time.Now().Format("2006-01-02")
+	go db.db.Exec(`
+		INSERT INTO group_msg_kinds (groupID, userId, statDate, kind, count)
+		VALUES (?, ?, ?, ?, 1)
+		ON CONFLICT(groupID, userId, statDate, kind) DO UPDATE SET count = count + 1
+	`, groupID, userID, currentDate, kind)
+}
+
+// GetGroupKindBreakdown mengambil sebaran jenis pesan se-grup. `dateLike` adalah
+// pola LIKE untuk statDate (mis. "2026-06-30" untuk satu hari, "2026-06-%" untuk
+// satu bulan, atau "%" untuk semua). Diurut dari jenis terbanyak.
+func (db *Database) GetGroupKindBreakdown(groupID, dateLike string) []KindStat {
+	if dateLike == "" {
+		dateLike = "%"
+	}
+	rows, err := db.db.Query(`
+		SELECT kind, SUM(count) FROM group_msg_kinds
+		WHERE groupID = ? AND statDate LIKE ?
+		GROUP BY kind ORDER BY SUM(count) DESC
+	`, groupID, dateLike)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var result []KindStat
+	for rows.Next() {
+		var k KindStat
+		if rows.Scan(&k.Kind, &k.Count) == nil {
+			result = append(result, k)
+		}
+	}
+	return result
+}
+
+// GetUserKindBreakdown sama seperti GetGroupKindBreakdown tetapi untuk satu user.
+func (db *Database) GetUserKindBreakdown(groupID, userID, dateLike string) []KindStat {
+	if dateLike == "" {
+		dateLike = "%"
+	}
+	rows, err := db.db.Query(`
+		SELECT kind, SUM(count) FROM group_msg_kinds
+		WHERE groupID = ? AND userId = ? AND statDate LIKE ?
+		GROUP BY kind ORDER BY SUM(count) DESC
+	`, groupID, userID, dateLike)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var result []KindStat
+	for rows.Next() {
+		var k KindStat
+		if rows.Scan(&k.Kind, &k.Count) == nil {
+			result = append(result, k)
+		}
+	}
+	return result
 }
 
 // Mengambil rekap user berdasarkan tanggal tertentu (YYYY-MM-DD)

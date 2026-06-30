@@ -167,6 +167,12 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 			// 1. Catat statistik ke database
 			src.DB.AddGroupStat(groupID, dbUserID, isMedia, wordCount)
 
+			// 1b. Catat JENIS pesan (text/image/video/voice/dll) untuk breakdown gstats.
+			src.DB.AddGroupKind(groupID, dbUserID, src.MessageKind(evt.Message))
+
+			// 1c. Tandai aktivitas pengirim → bahan pemilihan subscribe presence berkala.
+			src.NotePresenceActivity(evt.Info.Chat, evt.Info.Sender)
+
 			// 2. Tampung untuk auto-read batch tiap 30 menit
 			src.AddPendingRead(evt.Info.Chat, evt.Info.Sender, evt.Info.ID, evt.Info.Timestamp)
 		}()
