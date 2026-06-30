@@ -130,13 +130,21 @@ func SendGroupExcluding(
 	if len(participants) == 0 {
 		return "", fmt.Errorf("semua member ter-exclude, tak ada penerima tersisa")
 	}
-	if len(participants) == len(members) && (len(exclude) > 0 || excludeMe) {
-		// Tak ada yang benar-benar terbuang → kemungkinan JID exclude tak match.
-		// Tetap kirim, tapi beri tahu lewat error lunak? Kita lanjut saja (best-effort).
-		_ = participants
+
+	// 5) ROTASI sender-key bila ada member yang di-exclude.
+	//    INI KUNCI agar target dapat placeholder "Menunggu pesan ini" — BUKAN teks.
+	//    Sebabnya: sender-key WA me-ratchet MAJU. Tanpa rotasi, device yang
+	//    di-exclude tetap punya state key dari pesan sebelumnya & bisa menurunkan
+	//    iterasi skmsg baru → teks tetap terbaca. Dengan mengosongkan sender-key
+	//    tersimpan, SendGroup membuat key BARU (keyID baru), SKDM-nya hanya
+	//    dibagikan ke participant tersisa; target tak punya key baru → gagal
+	//    dekripsi → placeholder. Retry-receipt-nya tak terjawab (kita tak
+	//    addRecentMessage) sehingga placeholder menetap, persis perilaku sPR Baileys.
+	if len(exclude) > 0 {
+		rotateGroupSenderKey(ctx, client, chat)
 	}
 
-	// 5) Panggil SendGroup lewat reflection (param terakhir bertipe unexported).
+	// 6) Panggil SendGroup lewat reflection (param terakhir bertipe unexported).
 	return callSendGroup(ctx, di, ownID, chat, participants, msgID, message, addrMode)
 }
 
@@ -151,6 +159,26 @@ func SendSecretText(
 ) (string, error) {
 	msg := &waProto.Message{Conversation: proto.String(text)}
 	return SendGroupExcluding(ctx, client, chat, msg, "", exclude, excludeMe)
+}
+
+// rotateGroupSenderKey mengosongkan sender-key BOT untuk grup tsb di store, agar
+// SendGroup berikutnya menghasilkan sender-key BARU (lihat groups.SessionBuilder.
+// Create: key baru dibuat saat record kosong). whatsmeow memakai senderKeyName =
+// (group=chat.String(), sender=ownLID.SignalAddress()) — kita kosongkan baris itu.
+//
+// Efek samping wajar: seluruh member (yang tak di-exclude) menerima SKDM key baru
+// pada pesan ini juga, jadi mereka tetap bisa baca. Pesan normal berikutnya akan
+// memakai ulang key baru ini (re-distribusi ke semua), tapi target tetap tak bisa
+// membaca pesan tersembunyi karena ratchet maju (tak bisa mundur ke iterasi awal).
+func rotateGroupSenderKey(ctx context.Context, client *whatsmeow.Client, chat types.JID) {
+	ownLID := client.Store.GetLID()
+	if ownLID.IsEmpty() || client.Store.SenderKeys == nil {
+		return
+	}
+	senderAddr := ownLID.SignalAddress().String()
+	// session=nil → kolom sender_key di-set NULL → GetSenderKey balik nil →
+	// LoadSenderKey balik record kosong → Create generate key baru.
+	_ = client.Store.SenderKeys.PutSenderKey(ctx, chat.String(), senderAddr, nil)
 }
 
 // callSendGroup memanggil (*DangerousInternalClient).SendGroup via reflection dan
