@@ -160,20 +160,7 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 	if evt.Info.IsGroup {
 		// Eksekusi secara asinkron agar tidak memblokir respon bot
 		go func() {
-			isMedia := mediaType != ""
-			wordCount := len(strings.Fields(textMessage))
-			groupID := chatJID.ToNonAD().String()
-
-			// 1. Catat statistik ke database
-			src.DB.AddGroupStat(groupID, dbUserID, isMedia, wordCount)
-
-			// 1b. Catat JENIS pesan (text/image/video/voice/dll) untuk breakdown gstats.
-			src.DB.AddGroupKind(groupID, dbUserID, src.MessageKind(evt.Message))
-
-			// 1c. Tandai aktivitas pengirim → bahan pemilihan subscribe presence berkala.
-			src.NotePresenceActivity(evt.Info.Chat, evt.Info.Sender)
-
-			// 2. Tampung untuk auto-read batch tiap 30 menit
+			// Tampung untuk auto-read batch tiap 30 menit
 			src.AddPendingRead(evt.Info.Chat, evt.Info.Sender, evt.Info.ID, evt.Info.Timestamp)
 		}()
 	}
@@ -280,15 +267,7 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		return
 	}
 
-	// =================================================================
-	// AGEN AI (owner, JAPRI): pesan natural (bukan command) → agen memilih
-	// aksi otomatis (jadwal/tugas/email/catat/nilai/tanya). Hanya di chat
-	// pribadi owner agar grup tidak terganggu.
-	// =================================================================
 	if matchedCommand == nil {
-		if isOwner && !evt.Info.IsGroup && commands.HandleOwnerAgent(ctxBot) {
-			return
-		}
 		return
 	}
 

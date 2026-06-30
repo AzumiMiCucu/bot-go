@@ -31,10 +31,6 @@ func eventHandler(evt interface{}) {
 		if !v.Info.IsGroup {
 			// Jangan blokir receive-loop whatsmeow untuk network call presence.
 			go client.SubscribePresence(context.Background(), v.Info.Chat)
-		} else if !v.Info.IsFromMe {
-			// Lazy-subscribe presence pengirim grup (cooldown di dalam) agar bot
-			// menerima update online/last-seen untuk member yang aktif chat.
-			src.EnsurePresenceSub(client, v.Info.Sender)
 		}
 
 		// Proses async agar receive-loop whatsmeow tidak terblokir
@@ -68,11 +64,6 @@ func eventHandler(evt interface{}) {
 			commands.RecordTyping(v.MessageSource.Chat, v.MessageSource.Sender)
 			//	fmt.Printf("[PRESENCE] ⌨️ composing dari %s di %s\n", v.MessageSource.Sender, v.MessageSource.Chat)
 		}
-
-	case *events.Presence:
-		// Status ONLINE / OFFLINE / LAST-SEEN member (hanya untuk JID yang sudah
-		// di-SubscribePresence). Sumber data "user online" pada gstats.
-		src.RecordPresence(v.From, v.Unavailable, v.LastSeen)
 
 	case *events.GroupInfo:
 		// Sambutan / perpisahan grup (welcome & goodbye).
@@ -157,9 +148,7 @@ func main() {
 	// Mulai scheduler latar belakang
 	src.StartAutoReadScheduler(client)
 	src.StartAutoClearScheduler(client)
-	src.StartReminderScheduler(client)
 	commands.StartReferralScheduler(client)
-	src.StartPresenceScheduler(client) // subscribe presence berkala ke member aktif
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)

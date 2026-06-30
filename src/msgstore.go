@@ -90,17 +90,7 @@ func InitMessageStore() error {
 		bot      INTEGER DEFAULT 0,
 		last_ts  INTEGER
 	);
-	CREATE INDEX IF NOT EXISTS idx_statsenders_total ON stat_senders(total);
-
-	-- SNAPSHOT PRESENCE (online/last-seen) per JID — sumber data "user online" gstats.
-	-- Diisi dari events.Presence WhatsApp (butuh SubscribePresence lebih dulu).
-	CREATE TABLE IF NOT EXISTS presence_state (
-		jid         TEXT PRIMARY KEY,
-		online      INTEGER DEFAULT 0,
-		last_seen   INTEGER DEFAULT 0,  -- unix detik; 0 = tak diketahui (last-seen disembunyikan)
-		online_secs INTEGER DEFAULT 0,  -- akumulasi total durasi online (detik)
-		updated     INTEGER DEFAULT 0   -- unix detik update terakhir
-	);`
+	CREATE INDEX IF NOT EXISTS idx_statsenders_total ON stat_senders(total);`
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("buat tabel msg.db: %w", err)
 	}
@@ -118,9 +108,6 @@ func InitMessageStore() error {
 	msgChan = make(chan liveMessage, msgChanBuffer)
 	go msgWriter()
 	go msgPruner()
-
-	// Muat snapshot presence terakhir ke memori (last-seen tak hilang antar-restart).
-	loadPresenceState(db)
 
 	fmt.Println("[DB] msg.db (live message store) berhasil diinisialisasi")
 	return nil

@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,6 +78,32 @@ func bar(val, max, width int) string {
 		filled = width
 	}
 	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+}
+
+// pct menghitung persentase bulat (a dari total), aman untuk total 0.
+func pct(a, total int) int {
+	if total <= 0 {
+		return 0
+	}
+	return int(float64(a)/float64(total)*100 + 0.5)
+}
+
+// formatRibuan memformat angka dengan pemisah ribuan titik (mis. 1234567 → "1.234.567").
+func formatRibuan(num int) string {
+	str := strconv.Itoa(num)
+	length := len(str)
+	if length <= 3 {
+		return str
+	}
+	var result []string
+	for i := length; i > 0; i -= 3 {
+		start := i - 3
+		if start < 0 {
+			start = 0
+		}
+		result = append([]string{str[start:i]}, result...)
+	}
+	return strings.Join(result, ".")
 }
 
 func medalIcon(i int) string {
