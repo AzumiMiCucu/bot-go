@@ -3,8 +3,10 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"go/parser"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/traefik/yaegi/interp"
@@ -49,7 +51,7 @@ func init() {
 func ExecuteEval(ctx *ContextBot) error {
 	code := strings.TrimSpace(ctx.Args)
 	if code == "" {
-		return ctx.Reply("⚠️ Format: `>> <kode go>`\n\nContoh:\n• `>> 1+2`\n• `>> Ctx.PushName`\n• `>> Ctx.Reply(\"halo\")`\n• `>> Config.OwnerName`\n• `>> DB.GetUser(\"628xx@s.whatsapp.net\")`\n\n_Tersedia: Ctx, Client, DB, Config_")
+		return ctx.Reply("⚠️ Format: `>> <kode go>`\n\n*Ekspresi tunggal* (hasil otomatis ditampilkan):\n• `>> 1+2`\n• `>> Ctx.PushName`\n• `>> Ctx.Reply(\"halo\")`\n• `>> Config.OwnerName`\n• `>> DB.GetUser(\"628xx@s.whatsapp.net\")`\n\n*Blok multi-baris* (ala Node.js — statement berurutan, pakai `return` untuk hasil):\n```\n>> bt := Ctx.Button()\nbt.SetTitle(\"📺 STREAMING ENGINE\")\nbt.SetBody(\"Pilih opsi di bawah ini.\")\nbt.SetFooter(\"© Powered By Anichin\")\nid, _ := bt.SendToChatWithID(Ctx)\nreturn id\n```\n\n_Tersedia: Ctx, Client, DB, Config. Method WAJIB kapital. SendToChatWithID(Ctx) butuh argumen Ctx & balikannya (id, error)._")
 	}
 
 	i := interp.New(interp.Options{Unrestricted: true})
@@ -81,12 +83,65 @@ func ExecuteEval(ctx *ContextBot) error {
 	_, _ = i.Eval(`var DB = src.DB`)
 	_, _ = i.Eval(`var Config = src.AppConfig`)
 
-	v, err := i.Eval(code)
+	v, err := evalCode(i, code)
 	if err != nil {
 		return ctx.Reply(err.Error())
 	}
 
 	return ctx.Reply(formatEvalResult(v))
+}
+
+// evalCode menjembatani perbedaan antara REPL yaegi dan eval ala Node.js.
+//
+// Masalah: i.Eval(code) menjalankan SETIAP statement sebagai DEKLARASI
+// level-paket. Begitu kode berisi `:=` lalu rantai method pada nilai yang
+// di-inject (Ctx/Client) atau `return` di top-level, analisis tipe global
+// (GTA) yaegi gagal meresolve → error membingungkan "constant definition loop"
+// / "CFG post-order panic" (bahkan bisa men-crash proses).
+//
+// Solusi (meniru cara Node membungkus eval):
+//   - Ekspresi tunggal (`1+2`, `Ctx.Reply("x")`, `src.NewButton()....SendToChat(Ctx)`)
+//     → dievaluasi langsung, nilainya dikembalikan seperti REPL.
+//   - Blok multi-statement → dibungkus dalam fungsi sehingga statement berjalan
+//     BERURUTAN seperti badan fungsi Go biasa; pakai `return <expr>` untuk
+//     mengembalikan nilai (tanpa return → hasilnya kosong/OK).
+//
+// recover() memastikan panic interpreter jadi balasan error, bukan crash bot.
+func evalCode(i *interp.Interpreter, code string) (v reflect.Value, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("❌ panic interpreter: %v", r)
+		}
+	}()
+
+	// Satu ekspresi → jalur langsung (kembalikan nilainya).
+	if _, perr := parser.ParseExpr(strings.TrimSpace(code)); perr == nil {
+		return i.Eval(code)
+	}
+
+	// Blok statement → bungkus IIFE. Satu baris ditambahkan di depan, jadi
+	// nomor baris pada pesan error digeser balik -1 supaya cocok dengan input.
+	wrapped := "func() (__ret interface{}) {\n" + code + "\nreturn\n}()"
+	v, err = i.Eval(wrapped)
+	if err != nil {
+		err = fmt.Errorf("%s", shiftErrLine(err.Error(), -1))
+	}
+	return v, err
+}
+
+// shiftErrLine menggeser angka baris pada awal pesan error yaegi ("L:C: ...")
+// sebesar delta, mengoreksi offset akibat baris pembungkus IIFE.
+var errLinePrefix = regexp.MustCompile(`^(\d+):(\d+):`)
+
+func shiftErrLine(msg string, delta int) string {
+	return errLinePrefix.ReplaceAllStringFunc(msg, func(m string) string {
+		g := errLinePrefix.FindStringSubmatch(m)
+		line, _ := strconv.Atoi(g[1])
+		if line+delta < 1 {
+			return m
+		}
+		return strconv.Itoa(line+delta) + ":" + g[2] + ":"
+	})
 }
 
 func formatEvalResult(v reflect.Value) string {
