@@ -221,7 +221,7 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		},
 		Print:  src.Print,
 		Button: src.NewButton,
-		AiRich: src.NewAIRich(),
+		AIRich: src.NewAIRich,
 	}
 
 	// =================================================================

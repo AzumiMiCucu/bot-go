@@ -55,6 +55,7 @@ type ContextBot struct {
 	Print         func(data ...interface{})
 	Ctx           context.Context
 	Button        func() *ButtonBuilder
+	AIRich func() * AIRichBuilder
 }
 
 type HookType string
