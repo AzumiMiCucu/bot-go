@@ -39,7 +39,7 @@ func init() {
 	RegisterCommand(Command{
 		Name:        "Auto Asisten AI",
 		Category:    "Owner",
-		Aliases:     []string{"aiauto", "asistenauto", "agenauto", "autoai"},
+		Aliases:     []string{ "autoai"},
 		Pattern:     regexp.MustCompile(`(?i)^\s*(?:aiauto|asistenauto|agenauto|autoai)\s*(on|off)?\s*$`),
 		Description: "[Owner] Nyalakan/matikan auto-jawab AI di japri (aiauto on|off)",
 		Execute:     ExecuteAIAuto,

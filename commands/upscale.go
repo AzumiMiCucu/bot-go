@@ -23,8 +23,8 @@ func init() {
 	RegisterCommand(Command{
 		Name:        "Upscale HD",
 		Category:    "Tools",
-		Aliases:     []string{"hd", "upscale", "waifu2x", "remini"},
-		Pattern:     regexp.MustCompile(`(?i)^(?:hd|upscale|waifu2x|remini)(?:\s+([\s\S]+))?$`),
+		Aliases:     []string{"hd", "waifu2x",},
+		Pattern:     regexp.MustCompile(`(?i)^(?:hd|upscale|waifu2x)(?:\s+([\s\S]+))?$`),
 		Description: "Tingkatkan kualitas/resolusi gambar (reply gambar/stiker dengan `hd`)",
 		Price:       0.02,
 		Execute:     ExecuteUpscale,
