@@ -273,14 +273,20 @@ func cleanCallSamples(s []float32) {
 		s[i] = y
 	}
 
-	// 2. Low-pass ~6 kHz (Butterworth orde-4): batasi pita agar codec suara tak
-	//    memuntahkan artefak kasar pada frekuensi tinggi yang tak bisa ia modelkan.
-	applyLowpass(s, callRate, 6000, 2)
+	// 2. High-shelf -4.5 dB di atas ~3.2 kHz: MEREDAM (bukan memotong total) wilayah
+	//    treble tempat codec CELP paling banyak meng-grit/kresek. Lebih halus dari
+	//    sekadar low-pass keras → suara lebih JERNIH (masih ada "udara") tapi kasarnya
+	//    turun banyak.
+	applyHighShelf(s, callRate, 3200, -4.5)
 
-	// 3. Kompresor dinamis 4:1 → level lebih rata sebelum masuk codec.
+	// 3. Low-pass ~6.2 kHz (Butterworth orde-6, lebih tajam): buang sisa 7–8 kHz yang
+	//    nyaris hanya artefak codec + imaging resampler — sumber "kresek" tertinggi.
+	applyLowpass(s, callRate, 6200, 3)
+
+	// 4. Kompresor dinamis → level lebih rata sebelum masuk codec.
 	compressCallDynamics(s)
 
-	// 4. Normalisasi puncak ke 0.6 (beri headroom untuk CELP; cegah terlalu pelan).
+	// 5. Normalisasi puncak ke 0.6 (beri headroom untuk CELP; cegah terlalu pelan).
 	var peak float32
 	for _, x := range s {
 		a := x
@@ -301,9 +307,9 @@ func cleanCallSamples(s []float32) {
 		}
 	}
 
-	// 5. Soft-clip halus (tanh dengan drive ringan) di SELURUH sinyal: tak ada
-	//    "patahan" transfer-curve di ±0.95 yang justru menambah distorsi.
-	const drive = float32(1.1)
+	// 6. Soft-clip SANGAT halus (tanh drive 1.0): jaring pengaman peak tanpa menambah
+	//    harmonik kasar — drive lebih rendah dari sebelumnya (1.1) = lebih bersih.
+	const drive = float32(1.0)
 	norm := float32(math.Tanh(float64(drive)))
 	for i, x := range s {
 		s[i] = float32(math.Tanh(float64(drive*x))) / norm
@@ -315,7 +321,7 @@ func cleanCallSamples(s []float32) {
 // meng-overload codec CELP MLOW — penyebab kresek terbesar pada playcall musik.
 func compressCallDynamics(s []float32) {
 	const (
-		thresh = float32(0.25)   // di atas ini mulai ditekan
+		thresh = float32(0.22)   // di atas ini mulai ditekan (sedikit lebih dini = lebih anti-overload)
 		ratio  = float32(4.0)    // 4:1
 		atk    = float32(0.02)   // serangan cepat (per-sampel @16 kHz)
 		rel    = float32(0.0006) // pelepasan lambat (hindari "pumping")
@@ -358,6 +364,36 @@ func applyLowpass(s []float32, rate, cutoff, stages int) {
 			y2, y1 = y1, y
 			s[i] = float32(y)
 		}
+	}
+}
+
+// applyHighShelf menerapkan filter HIGH-SHELF (RBJ cookbook) ke sinyal di tempat:
+// menambah/mengurangi seluruh pita DI ATAS cutoff sebesar gainDB, dengan transisi
+// mulus. Dipakai dengan gainDB NEGATIF untuk MEREDAM treble tempat codec CELP
+// meng-grit — lebih halus daripada low-pass keras, jadi suara tetap jernih.
+func applyHighShelf(s []float32, rate, cutoff int, gainDB float64) {
+	if rate <= 0 || cutoff <= 0 || cutoff*2 >= rate {
+		return
+	}
+	A := math.Pow(10, gainDB/40)
+	w0 := 2 * math.Pi * float64(cutoff) / float64(rate)
+	cosw := math.Cos(w0)
+	sinw := math.Sin(w0)
+	alpha := sinw / 2 * math.Sqrt2 // slope shelf S=1
+	sqrtA := math.Sqrt(A)
+	a0 := (A + 1) - (A-1)*cosw + 2*sqrtA*alpha
+	b0 := A * ((A + 1) + (A-1)*cosw + 2*sqrtA*alpha) / a0
+	b1 := -2 * A * ((A - 1) + (A+1)*cosw) / a0
+	b2 := A * ((A + 1) + (A-1)*cosw - 2*sqrtA*alpha) / a0
+	a1 := 2 * ((A - 1) - (A+1)*cosw) / a0
+	a2 := ((A + 1) - (A-1)*cosw - 2*sqrtA*alpha) / a0
+	var x1, x2, y1, y2 float64
+	for i, xf := range s {
+		x := float64(xf)
+		y := b0*x + b1*x1 + b2*x2 - a1*y1 - a2*y2
+		x2, x1 = x1, x
+		y2, y1 = y1, y
+		s[i] = float32(y)
 	}
 }
 

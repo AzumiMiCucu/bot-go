@@ -11,10 +11,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/purpshell/meowcaller"
+	"github.com/purpshell/meowcaller/signaling"
 	"github.com/rs/zerolog"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
@@ -29,6 +31,11 @@ var (
 
 	callMu      sync.Mutex
 	activeCalls = make(map[string]*meowcaller.Call) // call-id → live call
+
+	// prewarmedPeers menandai LID target yang sesinya sudah "dipanaskan" pada sesi
+	// bot ini, agar prewarm hanya berjalan SEKALI per target (panggilan berikutnya
+	// tetap cepat). Lihat PrewarmCallTarget.
+	prewarmedPeers sync.Map // peerLID string → true
 )
 
 // InitCaller membungkus client whatsmeow dengan stack call meowcaller dan
@@ -98,35 +105,38 @@ func StartCall(ctx context.Context, target, audioPath string, notify func(string
 // dan DITUNGGU sampai selesai SEBELUM panggilan dimulai (lihat StartCallProvider).
 type AudioProvider func(ctx context.Context) (meowcaller.AudioSource, error)
 
-// StartCallProvider menelepon target lalu memutar audio yang disiapkan provide.
+// StartCallProvider menyiapkan audio SEPENUHNYA dulu (unduh+decode), baru menelepon.
 //
-// POLA (terbukti first-call-work, lihat commit bd59b4a): CallClient.Call dipicu
-// LEBIH DULU, dan provide() (DECODE + olah anti-kresek) berjalan di BACKGROUND
-// menumpang waktu berdering; hasilnya ditunggu di OnReady (praktis sudah selesai
-// saat lawan mengangkat). KUNCI: provide HANYA boleh men-DECODE audio yang BYTE-nya
-// SUDAH ADA (file/memori) — TANPA I/O jaringan. Unduhan (mis. MP3 dari internet)
-// WAJIB dilakukan pemanggil SAMPAI SELESAI sebelum StartCallProvider, sebab unduhan
-// jaringan yang berjalan bersamaan dengan handshake relay UDP membuat relay tak
-// pernah membridge → panggilan "tak terjawab" seketika. Decode (CPU) aman dijalankan
-// saat berdering; unduhan (jaringan) TIDAK.
+// KENAPA bukan "ring-first" (call dulu, siapkan audio paralel): pola itu terbukti
+// membuat panggilan PERTAMA ke tiap target "tak terjawab" seketika. Penyebabnya:
+// unduhan MP3 (bisa beberapa MB) berebut jaringan/CPU dengan handshake relay UDP
+// yang sensitif waktu, sehingga relay tak pernah membridge media lawan → missed.
+// Panggilan kedua lolos hanya karena lagunya sudah ter-unduh (tak ada kontensi).
+// Menyiapkan audio LEBIH DULU menghilangkan kontensi itu sepenuhnya — andal sejak
+// panggilan pertama. Trade-off: dering mulai beberapa detik lebih lambat (selama
+// unduh+decode), tapi panggilan benar-benar tersambung. JANGAN kembali ke ring-first.
 func StartCallProvider(ctx context.Context, target string, provide AudioProvider, notify func(string)) (string, string, error) {
 	if CallClient == nil {
 		return "", "", fmt.Errorf("subsistem panggilan belum diinisialisasi")
 	}
 
-	// Decode + olah audio di BACKGROUND sekarang juga (paralel dengan dering).
+	// 1. Siapkan audio SEPENUHNYA dulu (unduh + decode). Bila gagal, kembalikan error
+	//    SEBELUM menelepon — tak ada panggilan tergantung tanpa audio.
 	var preparedSrc meowcaller.AudioSource
-	var prepareErr error
-	prepareDone := make(chan struct{})
 	if provide != nil {
-		go func() {
-			preparedSrc, prepareErr = provide(ctx)
-			close(prepareDone)
-		}()
-	} else {
-		close(prepareDone)
+		s, err := provide(ctx)
+		if err != nil {
+			return "", "", fmt.Errorf("siapkan audio panggilan: %w", err)
+		}
+		preparedSrc = s
 	}
 
+	// 2. Prewarm sesi/daftar-device ke target (sekali per target). Aman & cepat;
+	//    melengkapi penyiapan audio di atas dalam menutup celah panggilan pertama.
+	PrewarmCallTarget(ctx, target)
+
+	// 3. Telepon. Audio sudah di tangan → tak ada kerja berat yang berebut dengan
+	//    handshake relay saat panggilan disiapkan.
 	call, err := CallClient.Call(ctx, target)
 	if err != nil {
 		return "", "", err
@@ -139,23 +149,22 @@ func StartCallProvider(ctx context.Context, target string, provide AudioProvider
 	activeCalls[callID] = call
 	callMu.Unlock()
 
-	if notify != nil {
-		call.OnStateChange(func(p meowcaller.CallPhase) {
+	// mute_v2 sisi CALLER (default MATI). Logika "callee menunda <accept> sampai
+	// mute_v2 caller tiba" (engine.go onCallRaw) HANYA berlaku bila lawan juga
+	// meowcaller (bot↔bot). Untuk WhatsApp MANUSIA, mengirim sinyal mid-call sedini
+	// fase 'connecting' bisa membuat app lawan menandai "tak terjawab". Aktifkan
+	// hanya untuk bot↔bot via env MEOW_CALLER_MUTE=1. Best-effort & non-fatal.
+	var muteOnce sync.Once
+	call.OnStateChange(func(p meowcaller.CallPhase) {
+		if p == meowcaller.CallPhaseConnecting && os.Getenv("MEOW_CALLER_MUTE") == "1" {
+			muteOnce.Do(func() { sendCallerMute(callID, call.Peer()) })
+		}
+		if notify != nil {
 			notify(phaseLabel(p))
-		})
-	}
+		}
+	})
 
 	call.OnReady(func() {
-		if provide == nil {
-			return
-		}
-		// Tunggu hasil decode background (praktis sudah selesai saat lawan mengangkat).
-		<-prepareDone
-		if prepareErr != nil {
-			Print("[CALL] ⚠️ Gagal menyiapkan audio panggilan: %v", prepareErr)
-			_ = call.Hangup()
-			return
-		}
 		if preparedSrc == nil {
 			return
 		}
@@ -176,18 +185,16 @@ func StartCallProvider(ctx context.Context, target string, provide AudioProvider
 	return callID, peer, nil
 }
 
-// StartCallMP3Download mengUNDUH byte MP3 SAMPAI SELESAI dulu, BARU menelepon —
-// unduhan jaringan TIDAK boleh berjalan saat panggilan disiapkan (lihat
-// StartCallProvider: itu memicu "tak terjawab"). Setelah byte di tangan, decode/olah
-// anti-kresek diserahkan ke StartCallProvider (jalan di background saat berdering).
+// StartCallMP3Download mengambil byte MP3 via download, men-decode+olah jadi audio
+// panggilan, LALU menelepon target (audio disiapkan dulu — lihat StartCallProvider).
+// Command cukup menyuplai fungsi unduh; decode/olah diurus di sini dan package
+// commands tak perlu mengenal meowcaller.
 func StartCallMP3Download(ctx context.Context, target string, download func(context.Context) ([]byte, error), notify func(string)) (string, string, error) {
-	// 1. Unduh PENUH dulu (jaringan), sebelum ada panggilan.
-	data, err := download(ctx)
-	if err != nil {
-		return "", "", err
-	}
-	// 2. provide hanya men-DECODE byte yang sudah ada (tanpa jaringan) — aman saat dering.
-	provide := func(context.Context) (meowcaller.AudioSource, error) {
+	provide := func(c context.Context) (meowcaller.AudioSource, error) {
+		data, err := download(c)
+		if err != nil {
+			return nil, err
+		}
 		return prepareCallAudioFromMP3Bytes(data)
 	}
 	return StartCallProvider(ctx, target, provide, notify)
@@ -241,6 +248,104 @@ func phaseLabel(p meowcaller.CallPhase) string {
 	default:
 		return "idle"
 	}
+}
+
+// sendCallerMute mengirim <call><mute_v2 mute-state="false"></call> dari sisi
+// CALLER (bot). Handshake panggilan WA mengharapkan caller mengirim mute_v2;
+// sisi callee menunda <accept>-nya sampai mute_v2 caller tiba. Dipanggil sekali
+// saat fase 'connecting' (relay+key sudah ada). Best-effort & non-fatal: kegagalan
+// hanya dicatat, tidak menutup panggilan.
+func sendCallerMute(callID string, peer types.JID) {
+	if callWA == nil || callID == "" || peer.IsEmpty() {
+		return
+	}
+	self := callWA.Store.GetLID()
+	if self.IsEmpty() {
+		return
+	}
+	node := signaling.BuildMuteV2(callID, peer, self, "false")
+	node.Attrs["id"] = callWA.GenerateMessageID()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := callWA.DangerousInternals().SendNode(ctx, node); err != nil {
+		Print("[CALL] ⚠️ Gagal kirim mute_v2 caller (best-effort): %v", err)
+		return
+	}
+	Print("[CALL] 🔇 mute_v2 caller terkirim (call %s).", callID)
+}
+
+// resolveCallPeerLID menurunkan target (nomor, JID telepon, atau @lid) menjadi LID
+// peer — alamat yang dipakai meowcaller untuk kunci E2E. Mengembalikan (LID, true)
+// bila berhasil. Meniru resolvePeerLID milik meowcaller agar prewarm memanaskan
+// IDENTITAS yang sama persis dengan yang dipakai saat offer (kalau beda, prewarm
+// sia-sia). Best-effort.
+func resolveCallPeerLID(ctx context.Context, target string) (types.JID, bool) {
+	target = strings.TrimSpace(target)
+	if target == "" || callWA == nil {
+		return types.EmptyJID, false
+	}
+	var jid types.JID
+	var err error
+	if strings.ContainsRune(target, '@') {
+		if jid, err = types.ParseJID(target); err != nil {
+			return types.EmptyJID, false
+		}
+	} else {
+		jid = types.NewJID(strings.TrimPrefix(target, "+"), types.DefaultUserServer)
+	}
+	if jid.Server == types.HiddenUserServer {
+		return jid, true // sudah LID
+	}
+	if lid, err := callWA.Store.LIDs.GetLIDForPN(ctx, jid); err == nil && !lid.IsEmpty() {
+		return lid, true
+	}
+	if info, err := callWA.GetUserInfo(ctx, []types.JID{jid}); err == nil {
+		for _, ui := range info {
+			if !ui.LID.IsEmpty() {
+				return ui.LID, true
+			}
+		}
+	}
+	if lid, err := callWA.Store.LIDs.GetLIDForPN(ctx, jid); err == nil && !lid.IsEmpty() {
+		return lid, true
+	}
+	return types.EmptyJID, false
+}
+
+// PrewarmCallTarget memanaskan jalur panggilan ke target SEBELUM offer dikirim:
+// resolusi LID (warm cache), ambil daftar device (usync), lalu prefetch prekey
+// bundle tiap device. Tujuannya menutup celah "panggilan pertama tak terjawab":
+// pada call pertama ke sebuah target, jalur kripto/usync ke peer belum siap dan
+// balapan dengan UI panggilan lawan → tampil missed. Prewarm menyiapkannya lebih
+// dulu, hanya SEKALI per target per sesi (prewarmedPeers), sehingga panggilan
+// berikutnya tetap cepat.
+//
+// AMAN: hanya MENGAMBIL bundle (FetchPreKeys) — tidak meng-enkripsi/menggeser
+// ratchet Signal. Meng-enkripsi-lalu-membuang pesan justru berbahaya: ia memajukan
+// ratchet sisi kita tanpa peer menerima pesan inisiasi, sehingga offer pkmsg
+// berikutnya gagal didekripsi peer. Jadi sengaja TIDAK dilakukan di sini.
+func PrewarmCallTarget(ctx context.Context, target string) {
+	if callWA == nil {
+		return
+	}
+	peerLID, ok := resolveCallPeerLID(ctx, target)
+	if !ok {
+		return
+	}
+	if _, warm := prewarmedPeers.Load(peerLID.String()); warm {
+		return // sudah dipanaskan pada sesi ini
+	}
+
+	devices, err := callWA.GetUserDevices(ctx, []types.JID{peerLID})
+	if err != nil || len(devices) == 0 {
+		return // jangan tandai warm; biar dicoba lagi di panggilan berikutnya
+	}
+	// Prefetch prekey bundle agar enkripsi callKey saat offer tak menunggu round-trip
+	// server. Tidak membangun/menggeser sesi — aman dari desync.
+	callWA.DangerousInternals().FetchPreKeysNoError(ctx, devices)
+
+	prewarmedPeers.Store(peerLID.String(), true)
+	Print("[CALL] 🔥 Prewarm panggilan ke %s (%d device) selesai.", peerLID.String(), len(devices))
 }
 
 // notifyOwner mengirim notifikasi teks singkat ke owner (best-effort, async-safe).
