@@ -2,15 +2,20 @@ package src
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"reflect"
+	"sort"
+	"strings"
 	"sync"
 	"unsafe"
 
 	groupRecord "go.mau.fi/libsignal/groups/state/record"
 	"go.mau.fi/libsignal/util/keyhelper"
 	"go.mau.fi/whatsmeow"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
@@ -45,6 +50,21 @@ import (
 
 // ExcludeDebug: bila true, cetak diagnosa ke console (log standar) saat mengirim.
 var ExcludeDebug = true
+
+// ExcludePairwise memilih STRATEGI exclude:
+//
+//	true  → STRATEGY B (pairwise, TANPA skmsg). Isi pesan asli dienkripsi
+//	        PAIRWISE (per-device, <enc type=msg/pkmsg>) HANYA ke device yang
+//	        diizinkan, dibungkus dalam <participants> TANPA node <enc type=skmsg>
+//	        tingkat-atas. Server hanya me-rute enc ke device yang tercantum →
+//	        target ter-exclude TIDAK menerima apa pun → TAK ADA placeholder
+//	        "Menunggu pesan ini". Inilah yang dipakai teman (Baileys).
+//	false → STRATEGY A (skmsg lama). Server tetap fan-out skmsg ke semua device,
+//	        target dapat placeholder karena sender-key dirotasi. Lihat
+//	        rotateGroupSenderKey.
+//
+// Default Strategy B karena itu yang diminta (bersih, tanpa placeholder).
+var ExcludePairwise = true
 
 // excludeSendMu menserialkan rotasi+SendGroup jalur-reflection kita (messageSendLock
 // internal whatsmeow tak ter-ekspos).
@@ -143,7 +163,17 @@ func SendGroupExcluding(
 	excludeSendMu.Lock()
 	defer excludeSendMu.Unlock()
 
-	// 5) ROTASI sender-key (wajib agar target yang sudah punya key lama tak bisa baca).
+	// 5) STRATEGY B (default): pairwise, TANPA skmsg → target tak dapat apa pun,
+	//    TIDAK ada placeholder. Ini yang diminta.
+	if ExcludePairwise {
+		phash, err := sendGroupPairwise(ctx, client, chat, message, msgID, participants, addrMode)
+		if ExcludeDebug {
+			log.Printf("[sembunyi] StrategyB(pairwise) selesai phash=%q err=%v (tanpa skmsg → target tak terima apa pun)", phash, err)
+		}
+		return phash, err
+	}
+
+	// 5b) STRATEGY A (lama): rotasi sender-key + skmsg → target dapat placeholder.
 	if realExcluded > 0 {
 		rotated := rotateGroupSenderKey(ctx, client, chat)
 		if ExcludeDebug {
@@ -157,6 +187,141 @@ func SendGroupExcluding(
 		log.Printf("[sembunyi] SendGroup selesai phash=%q err=%v", phash, err)
 	}
 	return phash, err
+}
+
+// sendGroupPairwise = STRATEGY B. Enkripsi isi pesan asli PAIRWISE ke tiap device
+// dari `participants` (yang diizinkan), bungkus dalam <participants>, TANPA node
+// <enc type=skmsg> tingkat-atas. Karena tak ada skmsg, server WA TIDAK mem-fan-out
+// ke seluruh grup — ia hanya me-rute tiap <enc> ke device tujuannya. Device target
+// yang di-exclude tak pernah masuk daftar → tak menerima stanza apa pun → TAK ADA
+// placeholder "Menunggu pesan ini".
+//
+// prepareMessageNode whatsmeow sudah membangun <message><participants>…</> persis
+// begini (dipakai jalur DM & saat membagikan SKDM). Kita panggil versi terekspos
+// (DangerousInternals().PrepareMessageNode) lalu KIRIM apa adanya tanpa menambah
+// skmsg — itulah bedanya dengan sendGroup.
+func sendGroupPairwise(
+	ctx context.Context,
+	client *whatsmeow.Client,
+	chat types.JID,
+	message *waProto.Message,
+	msgID string,
+	participants []types.JID,
+	addrMode types.AddressingMode,
+) (phash string, err error) {
+	di := client.DangerousInternals()
+
+	node, allDevices, err := callPrepareMessageNode(ctx, di, chat, msgID, message, participants, addrMode)
+	if err != nil {
+		return "", err
+	}
+	if node == nil {
+		return "", fmt.Errorf("prepareMessageNode mengembalikan node kosong")
+	}
+
+	// phash = hash daftar-device penerima (persis perhitungan whatsmeow). Untuk
+	// pesan grup, node <message> butuh atribut phash.
+	phash = participantListHashV2(allDevices)
+	if node.Attrs == nil {
+		node.Attrs = waBinary.Attrs{}
+	}
+	node.Attrs["phash"] = phash
+
+	if ExcludeDebug {
+		log.Printf("[sembunyi] StrategyB device_penerima=%d phash=%s (tak ada skmsg ditambahkan)", len(allDevices), phash)
+	}
+
+	// KIRIM apa adanya — TANPA menambahkan <enc type=skmsg>.
+	if serr := di.SendNode(ctx, *node); serr != nil {
+		return phash, fmt.Errorf("gagal kirim node pairwise: %w", serr)
+	}
+	return phash, nil
+}
+
+// participantListHashV2 mereplikasi whatsmeow (sha256 atas ADString terurut, 6 byte
+// pertama, base64 raw-std, prefix "2:").
+func participantListHashV2(participants []types.JID) string {
+	ss := make([]string, len(participants))
+	for i, p := range participants {
+		ss[i] = p.ADString()
+	}
+	sort.Strings(ss)
+	h := sha256.Sum256([]byte(strings.Join(ss, "")))
+	return "2:" + base64.RawStdEncoding.EncodeToString(h[:6])
+}
+
+// callPrepareMessageNode memanggil (*DangerousInternalClient).PrepareMessageNode via
+// reflection. Param terakhir (nodeExtraParams) bertipe unexported → dibangun via
+// reflect.New; field addressingMode di-set lewat unsafe untuk grup mode LID.
+//
+// Tanda tangan target:
+//
+//	PrepareMessageNode(ctx, to types.JID, id types.MessageID, message *waE2E.Message,
+//	    participants []types.JID, plaintext, dsmPlaintext []byte,
+//	    timings *MessageDebugTimings, extraParams nodeExtraParams)
+//	    (*waBinary.Node, []types.JID, error)
+//
+// plaintext = proto.Marshal(message) MENTAH (padding dilakukan di dalam enkripsi
+// per-device oleh whatsmeow). dsmPlaintext = nil (grup tak punya device-sent message).
+func callPrepareMessageNode(
+	ctx context.Context,
+	di *whatsmeow.DangerousInternalClient,
+	to types.JID,
+	msgID string,
+	message *waProto.Message,
+	participants []types.JID,
+	addrMode types.AddressingMode,
+) (node *waBinary.Node, allDevices []types.JID, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panggilan PrepareMessageNode gagal (API whatsmeow mungkin berubah): %v", r)
+		}
+	}()
+
+	plaintext, merr := proto.Marshal(message)
+	if merr != nil {
+		return nil, nil, fmt.Errorf("gagal marshal message: %w", merr)
+	}
+
+	method := reflect.ValueOf(di).MethodByName("PrepareMessageNode")
+	if !method.IsValid() {
+		return nil, nil, fmt.Errorf("DangerousInternals.PrepareMessageNode tidak ditemukan (versi whatsmeow tak kompatibel)")
+	}
+	mt := method.Type()
+	if mt.NumIn() != 9 {
+		return nil, nil, fmt.Errorf("tanda tangan PrepareMessageNode berubah (arg=%d, diharapkan 9)", mt.NumIn())
+	}
+
+	// Bangun nilai zero untuk nodeExtraParams (param terakhir) lalu set addressingMode.
+	extra := reflect.New(mt.In(8)).Elem()
+	if addrMode != "" {
+		if f := extra.FieldByName("addressingMode"); f.IsValid() {
+			reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).
+				Elem().
+				Set(reflect.ValueOf(addrMode))
+		}
+	}
+
+	out := method.Call([]reflect.Value{
+		reflect.ValueOf(ctx),
+		reflect.ValueOf(to),
+		reflect.ValueOf(msgID),
+		reflect.ValueOf(message),
+		reflect.ValueOf(participants),
+		reflect.ValueOf(plaintext),
+		reflect.ValueOf([]byte(nil)),
+		reflect.ValueOf(&whatsmeow.MessageDebugTimings{}),
+		extra,
+	})
+
+	if ev := out[2].Interface(); ev != nil {
+		if e, ok := ev.(error); ok {
+			return nil, nil, e
+		}
+	}
+	node, _ = out[0].Interface().(*waBinary.Node)
+	allDevices, _ = out[1].Interface().([]types.JID)
+	return node, allDevices, nil
 }
 
 // SendSecretText = pembungkus praktis untuk pesan teks.

@@ -36,6 +36,11 @@ func eventHandler(evt interface{}) {
 		// Proses async agar receive-loop whatsmeow tidak terblokir
 		go MessageHandler(client, v)
 
+	case *events.FBMessage:
+		// Pesan interop Meta (Messenger/Instagram ↔ WA) — sangat langka.
+		// whatsmeow sudah mendekodenya; kita tangkap & ringkas (lihat src/armadillo.go).
+		go src.HandleFBMessage(client, v)
+
 	case *events.Connected:
 		fmt.Println("[SYSTEM] ✅ Terhubung ke WhatsApp server.")
 
