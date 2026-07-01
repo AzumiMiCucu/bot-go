@@ -7,6 +7,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.44
 	github.com/purpshell/meowcaller v0.0.0-20260624070908-656eef01a70e
 	github.com/traefik/yaegi v0.16.1
+	go.mau.fi/libsignal v0.2.2
 	go.mau.fi/whatsmeow v0.0.0-20260609091626-4e622162b959
 	google.golang.org/protobuf v1.36.11
 )
@@ -29,7 +30,6 @@ require (
 	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.33 // indirect
-	go.mau.fi/libsignal v0.2.2 // indirect
 	go.mau.fi/util v0.9.9 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a // indirect
