@@ -29,6 +29,11 @@ type Command struct {
 	Execute      func(*ContextBot) error
 	Price        float64
 	Cooldown     time.Duration
+	// Premium: bila true, command HANYA bisa dijalankan user premium (owner selalu
+	// premium), dan HASIL-nya di grup disembunyikan dari member non-premium lewat
+	// sistem exclude (mereka dapat placeholder "Menunggu pesan ini"). Set di
+	// RegisterCommand → skalabel: tambah fitur premium cukup `Premium: true`.
+	Premium      bool
 	Middlewares  []Middleware
 	LastExecuted map[string]time.Time
 	mu           sync.RWMutex
@@ -46,6 +51,7 @@ type ContextBot struct {
 	PushName      string
 	UserBalance   float64
 	IsOwner       bool
+	IsPremium     bool
 	IsGroup       bool
 	AddBalance    func(float64) float64
 	DeductBalance func(float64) (bool, float64)

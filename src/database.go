@@ -133,6 +133,12 @@ func (db *Database) createTables() {
 		PRIMARY KEY (groupID, pattern)
 	);
 
+	CREATE TABLE IF NOT EXISTS premium_users (
+		number     TEXT PRIMARY KEY,
+		expires_at INTEGER NOT NULL DEFAULT 0,
+		added_at   INTEGER NOT NULL DEFAULT 0
+	);
+
 
 	CREATE INDEX IF NOT EXISTS idx_users_id ON users(id);
 	CREATE INDEX IF NOT EXISTS idx_users_lastSeen ON users(lastSeen);

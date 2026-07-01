@@ -182,6 +182,17 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 	}
 	matchedCommand, extractedArgs := commands.MatchCommand(cmdText)
 
+	// Premium: owner selalu premium; selain itu cek DB pada SEMUA bentuk nomor
+	// (dbUserID, PN, LID) agar cocok lintas addressing.
+	isPremium := isOwner ||
+		src.DB.IsPremiumNumber(user) ||
+		(!senderJID.IsEmpty() && src.DB.IsPremiumNumber(senderJID.ToNonAD().User)) ||
+		(!senderAlt.IsEmpty() && src.DB.IsPremiumNumber(senderAlt.ToNonAD().User))
+
+	// Bila command yang cocok = premium & di grup, balasannya dirutekan lewat sistem
+	// exclude (hanya member premium yang bisa baca).
+	isPremiumCmd := matchedCommand != nil && matchedCommand.Premium
+
 	// Build Context (dibangun lebih awal agar bisa dipakai reply-router & eksekusi command)
 	ctxBot := &commands.ContextBot{
 		Client:      client,
@@ -196,6 +207,7 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		UserBalance: userData.Balance,
 		IsGroup:     evt.Info.IsGroup,
 		IsOwner:     isOwner,
+		IsPremium:   isPremium,
 		Ctx:         context.Background(),
 		AddBalance: func(amount float64) float64 {
 			return src.DB.AddBalance(dbUserID, amount)
@@ -204,9 +216,17 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 			return src.DB.DeductBalance(dbUserID, amount)
 		},
 		Reply: func(text string) error {
+			// Hasil command premium di grup → sembunyikan dari member non-premium.
+			if isPremiumCmd && evt.Info.IsGroup {
+				_, err := src.SendPremiumText(client, chatJID, text)
+				return err
+			}
 			return ReplyMsg(client, chatJID, evt, text)
 		},
 		ReplyWithID: func(text string) (string, error) {
+			if isPremiumCmd && evt.Info.IsGroup {
+				return src.SendPremiumText(client, chatJID, text)
+			}
 			return sendReply(client, chatJID, evt, text)
 		},
 		React: func(text string) error {
@@ -268,6 +288,12 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 	}
 
 	if matchedCommand == nil {
+		return
+	}
+
+	// Gate PREMIUM: hanya user premium (owner selalu) boleh menjalankan.
+	if matchedCommand.Premium && !isPremium {
+		_ = ReplyMsg(client, chatJID, evt, "🔒 Fitur *PREMIUM*.\nHubungi owner untuk akses.")
 		return
 	}
 
