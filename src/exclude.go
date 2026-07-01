@@ -185,25 +185,34 @@ func SendGroupExcluding(
 	return phash, err
 }
 
-// sendGroupPairwise = STRATEGY B. Enkripsi isi pesan ASLI secara PAIRWISE lalu kirim
-// SATU stanza <message> PER-DEVICE yang diizinkan — persis struktur retry-response
-// grup whatsmeow (handleRetryReceipt), yang TERBUKTI di-render WhatsApp resmi:
+// sendGroupPairwise = STRATEGY B. Membangun SATU stanza <message> berisi SATU node
+// <participants> dengan enc PAIRWISE per-device (isi Message LENGKAP, bukan SKDM),
+// TANPA <enc type=skmsg> tingkat-atas dan TANPA atribut phash — persis relayMessage
+// Baileys jalur grup (sumber sPR.js teman):
 //
-//	<message to=GRUP type=text id=... participant=DEVICE_JID [addressing_mode=lid]>
-//	  <enc v=2 type=msg|pkmsg> …ciphertext pairwise berisi Message lengkap… </enc>
-//	  [<device-identity> bila pkmsg]
+//	<message to=GRUP id=... type=text addressing_mode=lid>
+//	  <participants>
+//	    <to jid=DEVICE><enc v=2 type=msg|pkmsg> …pairwise(Message penuh)… </enc></to>
+//	    …hanya device yang diizinkan…
+//	  </participants>
+//	  [<device-identity> bila ada pkmsg]
 //	</message>
 //
-// Kunci bedanya dengan sendGroup: TIDAK ada <enc type=skmsg>, TIDAK ada <participants>
-// pembungkus, TIDAK ada phash. Atribut `participant` mengarahkan tiap stanza HANYA ke
-// satu device tujuan, jadi server WA me-rute per-device — bukan fan-out grup. Device
-// target yang di-exclude tak pernah dijadikan tujuan → tak menerima stanza apa pun →
-// TAK ADA placeholder "Menunggu pesan ini".
+// Tanpa skmsg, server WA tak mem-fan-out sender-key ke seluruh grup; ia hanya
+// mengantar tiap enc ke device yang tercantum di <participants>. Device target yang
+// di-exclude tak masuk daftar → tak menerima apa pun → TAK ADA placeholder.
 //
-// Percobaan awal (bungkus <participants> tanpa skmsg) GAGAL render di WA resmi karena
-// enc di dalam <participants> diperlakukan sbagai material kunci (SKDM), bukan konten.
-// Struktur retry-response (enc langsung + participant) inilah yang dipakai WA untuk
-// mengantar konten grup pairwise, sehingga pasti tampil.
+// CATATAN PENTING (dua kegagalan sebelumnya):
+//   - JANGAN set attrs["phash"]. whatsmeow.sendGroup men-set phash KARENA ada skmsg
+//     (server memverifikasi daftar device untuk SKDM). Baileys jalur grup TIDAK
+//     men-set phash. phash atas SUBSET device → server anggap daftar tak lengkap →
+//     drop pesan (gejala: "sukses" tapi tak ada yang menerima). Inilah bug B-v1.
+//   - JANGAN kirim N stanza terpisah ber-atribut `participant` (itu format
+//     retry-response, hanya sah sebagai balasan receipt) — bug B-v2.
+//
+// prepareMessageNode whatsmeow membangun struktur <participants> ini persis (dipakai
+// jalur DM & pembagian SKDM). Kita panggil versi terekspos lalu KIRIM apa adanya
+// TANPA menambah skmsg maupun phash — itulah bedanya dengan sendGroup.
 func sendGroupPairwise(
 	ctx context.Context,
 	client *whatsmeow.Client,
@@ -213,122 +222,105 @@ func sendGroupPairwise(
 	participants []types.JID,
 	addrMode types.AddressingMode,
 ) (string, error) {
-	di := client.DangerousInternals()
-
-	// 1) Kumpulkan SEMUA device dari participant yang diizinkan (buang device hosted
-	//    seperti prepareMessageNode lakukan untuk grup).
-	allDevices, err := client.GetUserDevices(ctx, participants)
-	if err != nil {
-		return "", fmt.Errorf("gagal ambil daftar device: %w", err)
-	}
-	devices := allDevices[:0:0]
-	for _, d := range allDevices {
-		if d.Server == types.HostedServer || d.Server == types.HostedLIDServer {
-			continue
-		}
-		devices = append(devices, d)
-	}
-	if len(devices) == 0 {
-		return "", fmt.Errorf("tak ada device penerima tersisa")
-	}
-
-	// 2) Enkripsi isi pesan ASLI pairwise ke tiap device. EncryptMessageForDevices
-	//    mengurus fetch prekey + migrasi LID, dan mengembalikan node <to jid><enc>.
-	//    dsmPlaintext=nil (grup tak punya device-sent message).
-	plaintext, err := proto.Marshal(message)
-	if err != nil {
-		return "", fmt.Errorf("gagal marshal message: %w", err)
-	}
-	toNodes, includeIdentity, err := di.EncryptMessageForDevices(
-		ctx, devices, msgID, plaintext, nil, waBinary.Attrs{},
+	node, allDevices, err := callPrepareMessageNode(
+		ctx, client.DangerousInternals(), chat, msgID, message, participants, addrMode,
 	)
 	if err != nil {
-		return "", fmt.Errorf("gagal enkripsi pairwise: %w", err)
+		return "", err
+	}
+	if node == nil {
+		return "", fmt.Errorf("prepareMessageNode mengembalikan node kosong")
 	}
 
-	msgType := groupMessageType(message)
-	var deviceIdentity *waBinary.Node
-	if includeIdentity {
-		if n := makeDeviceIdentityNode(client); n != nil {
-			deviceIdentity = n
-		}
-	}
-
-	// 3) Bongkar tiap <to jid><enc> → kirim sebagai stanza terarah per-device.
-	var sent, failed int
-	for i := range toNodes {
-		to := &toNodes[i]
-		devJID, _ := to.Attrs["jid"].(types.JID)
-		kids := to.GetChildren()
-		if len(kids) == 0 {
-			continue
-		}
-		enc := kids[0] // node <enc>
-
-		content := []waBinary.Node{enc}
-		encType, _ := enc.Attrs["type"].(string)
-		if deviceIdentity != nil && encType == "pkmsg" {
-			content = append(content, *deviceIdentity)
-		}
-
-		attrs := waBinary.Attrs{
-			"to":          chat,
-			"id":          msgID,
-			"type":        msgType,
-			"participant": devJID,
-		}
-		if addrMode != "" {
-			attrs["addressing_mode"] = string(addrMode)
-		}
-
-		if serr := di.SendNode(ctx, waBinary.Node{Tag: "message", Attrs: attrs, Content: content}); serr != nil {
-			failed++
-			if ExcludeDebug {
-				log.Printf("[sembunyi] StrategyB gagal kirim ke device %s: %v", devJID, serr)
-			}
-			continue
-		}
-		sent++
-	}
+	// KUNCI: JANGAN set phash. (Baileys jalur grup tidak men-set phash; menambahkannya
+	// atas subset device membuat server men-drop pesan.)
+	delete(node.Attrs, "phash")
 
 	if ExcludeDebug {
-		log.Printf("[sembunyi] StrategyB per-device: total_device=%d terkirim=%d gagal=%d type=%q id=%s",
-			len(toNodes), sent, failed, msgType, msgID)
+		log.Printf("[sembunyi] StrategyB device_penerima=%d id=%s (participants pairwise, tanpa skmsg & tanpa phash)",
+			len(allDevices), msgID)
 	}
-	if sent == 0 {
-		return "", fmt.Errorf("tak ada stanza yang berhasil terkirim (gagal=%d)", failed)
+
+	// KIRIM apa adanya — TANPA menambahkan <enc type=skmsg> maupun phash.
+	if serr := client.DangerousInternals().SendNode(ctx, *node); serr != nil {
+		return "", fmt.Errorf("gagal kirim node pairwise: %w", serr)
 	}
 	return "", nil
 }
 
-// makeDeviceIdentityNode mereplikasi whatsmeow: <device-identity> berisi Account
-// ter-marshal. Dipakai saat enc bertipe pkmsg (prekey message).
-func makeDeviceIdentityNode(client *whatsmeow.Client) *waBinary.Node {
-	if client.Store == nil || client.Store.Account == nil {
-		return nil
-	}
-	b, err := proto.Marshal(client.Store.Account)
-	if err != nil {
-		return nil
-	}
-	return &waBinary.Node{Tag: "device-identity", Content: b}
-}
+// callPrepareMessageNode memanggil (*DangerousInternalClient).PrepareMessageNode via
+// reflection. Param terakhir (nodeExtraParams) bertipe unexported → dibangun via
+// reflect.New; field addressingMode di-set lewat unsafe untuk grup mode LID.
+//
+// Tanda tangan target:
+//
+//	PrepareMessageNode(ctx, to types.JID, id types.MessageID, message *waE2E.Message,
+//	    participants []types.JID, plaintext, dsmPlaintext []byte,
+//	    timings *MessageDebugTimings, extraParams nodeExtraParams)
+//	    (*waBinary.Node, []types.JID, error)
+//
+// plaintext = proto.Marshal(message) MENTAH (padding di dalam encryptMessageForDevice).
+// dsmPlaintext = nil (grup tak punya device-sent message). Karena plaintext = Message
+// PENUH (bukan SKDM), tiap <enc> di <participants> berisi konten pesan sesungguhnya.
+func callPrepareMessageNode(
+	ctx context.Context,
+	di *whatsmeow.DangerousInternalClient,
+	to types.JID,
+	msgID string,
+	message *waProto.Message,
+	participants []types.JID,
+	addrMode types.AddressingMode,
+) (node *waBinary.Node, allDevices []types.JID, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panggilan PrepareMessageNode gagal (API whatsmeow mungkin berubah): %v", r)
+		}
+	}()
 
-// groupMessageType mereplikasi getTypeFromMessage whatsmeow untuk atribut `type`
-// pada node <message> (cukup subset yang relevan; default "text").
-func groupMessageType(msg *waProto.Message) string {
-	switch {
-	case msg.GetReactionMessage() != nil, msg.GetEncReactionMessage() != nil:
-		return "reaction"
-	case msg.GetPollCreationMessage() != nil, msg.GetPollUpdateMessage() != nil:
-		return "poll"
-	case msg.GetImageMessage() != nil, msg.GetVideoMessage() != nil,
-		msg.GetAudioMessage() != nil, msg.GetDocumentMessage() != nil,
-		msg.GetStickerMessage() != nil:
-		return "media"
-	default:
-		return "text"
+	plaintext, merr := proto.Marshal(message)
+	if merr != nil {
+		return nil, nil, fmt.Errorf("gagal marshal message: %w", merr)
 	}
+
+	method := reflect.ValueOf(di).MethodByName("PrepareMessageNode")
+	if !method.IsValid() {
+		return nil, nil, fmt.Errorf("DangerousInternals.PrepareMessageNode tidak ditemukan (versi whatsmeow tak kompatibel)")
+	}
+	mt := method.Type()
+	if mt.NumIn() != 9 {
+		return nil, nil, fmt.Errorf("tanda tangan PrepareMessageNode berubah (arg=%d, diharapkan 9)", mt.NumIn())
+	}
+
+	// Bangun nilai zero untuk nodeExtraParams (param terakhir) lalu set addressingMode.
+	extra := reflect.New(mt.In(8)).Elem()
+	if addrMode != "" {
+		if f := extra.FieldByName("addressingMode"); f.IsValid() {
+			reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).
+				Elem().
+				Set(reflect.ValueOf(addrMode))
+		}
+	}
+
+	out := method.Call([]reflect.Value{
+		reflect.ValueOf(ctx),
+		reflect.ValueOf(to),
+		reflect.ValueOf(msgID),
+		reflect.ValueOf(message),
+		reflect.ValueOf(participants),
+		reflect.ValueOf(plaintext),
+		reflect.ValueOf([]byte(nil)),
+		reflect.ValueOf(&whatsmeow.MessageDebugTimings{}),
+		extra,
+	})
+
+	if ev := out[2].Interface(); ev != nil {
+		if e, ok := ev.(error); ok {
+			return nil, nil, e
+		}
+	}
+	node, _ = out[0].Interface().(*waBinary.Node)
+	allDevices, _ = out[1].Interface().([]types.JID)
+	return node, allDevices, nil
 }
 
 // SendSecretText = pembungkus praktis untuk pesan teks.
