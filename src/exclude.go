@@ -2,13 +2,9 @@ package src
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
 	"log"
 	"reflect"
-	"sort"
-	"strings"
 	"sync"
 	"unsafe"
 
@@ -189,17 +185,25 @@ func SendGroupExcluding(
 	return phash, err
 }
 
-// sendGroupPairwise = STRATEGY B. Enkripsi isi pesan asli PAIRWISE ke tiap device
-// dari `participants` (yang diizinkan), bungkus dalam <participants>, TANPA node
-// <enc type=skmsg> tingkat-atas. Karena tak ada skmsg, server WA TIDAK mem-fan-out
-// ke seluruh grup — ia hanya me-rute tiap <enc> ke device tujuannya. Device target
-// yang di-exclude tak pernah masuk daftar → tak menerima stanza apa pun → TAK ADA
-// placeholder "Menunggu pesan ini".
+// sendGroupPairwise = STRATEGY B. Enkripsi isi pesan ASLI secara PAIRWISE lalu kirim
+// SATU stanza <message> PER-DEVICE yang diizinkan — persis struktur retry-response
+// grup whatsmeow (handleRetryReceipt), yang TERBUKTI di-render WhatsApp resmi:
 //
-// prepareMessageNode whatsmeow sudah membangun <message><participants>…</> persis
-// begini (dipakai jalur DM & saat membagikan SKDM). Kita panggil versi terekspos
-// (DangerousInternals().PrepareMessageNode) lalu KIRIM apa adanya tanpa menambah
-// skmsg — itulah bedanya dengan sendGroup.
+//	<message to=GRUP type=text id=... participant=DEVICE_JID [addressing_mode=lid]>
+//	  <enc v=2 type=msg|pkmsg> …ciphertext pairwise berisi Message lengkap… </enc>
+//	  [<device-identity> bila pkmsg]
+//	</message>
+//
+// Kunci bedanya dengan sendGroup: TIDAK ada <enc type=skmsg>, TIDAK ada <participants>
+// pembungkus, TIDAK ada phash. Atribut `participant` mengarahkan tiap stanza HANYA ke
+// satu device tujuan, jadi server WA me-rute per-device — bukan fan-out grup. Device
+// target yang di-exclude tak pernah dijadikan tujuan → tak menerima stanza apa pun →
+// TAK ADA placeholder "Menunggu pesan ini".
+//
+// Percobaan awal (bungkus <participants> tanpa skmsg) GAGAL render di WA resmi karena
+// enc di dalam <participants> diperlakukan sbagai material kunci (SKDM), bukan konten.
+// Struktur retry-response (enc langsung + participant) inilah yang dipakai WA untuk
+// mengantar konten grup pairwise, sehingga pasti tampil.
 func sendGroupPairwise(
 	ctx context.Context,
 	client *whatsmeow.Client,
@@ -208,120 +212,123 @@ func sendGroupPairwise(
 	msgID string,
 	participants []types.JID,
 	addrMode types.AddressingMode,
-) (phash string, err error) {
+) (string, error) {
 	di := client.DangerousInternals()
 
-	node, allDevices, err := callPrepareMessageNode(ctx, di, chat, msgID, message, participants, addrMode)
+	// 1) Kumpulkan SEMUA device dari participant yang diizinkan (buang device hosted
+	//    seperti prepareMessageNode lakukan untuk grup).
+	allDevices, err := client.GetUserDevices(ctx, participants)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("gagal ambil daftar device: %w", err)
 	}
-	if node == nil {
-		return "", fmt.Errorf("prepareMessageNode mengembalikan node kosong")
+	devices := allDevices[:0:0]
+	for _, d := range allDevices {
+		if d.Server == types.HostedServer || d.Server == types.HostedLIDServer {
+			continue
+		}
+		devices = append(devices, d)
+	}
+	if len(devices) == 0 {
+		return "", fmt.Errorf("tak ada device penerima tersisa")
 	}
 
-	// phash = hash daftar-device penerima (persis perhitungan whatsmeow). Untuk
-	// pesan grup, node <message> butuh atribut phash.
-	phash = participantListHashV2(allDevices)
-	if node.Attrs == nil {
-		node.Attrs = waBinary.Attrs{}
+	// 2) Enkripsi isi pesan ASLI pairwise ke tiap device. EncryptMessageForDevices
+	//    mengurus fetch prekey + migrasi LID, dan mengembalikan node <to jid><enc>.
+	//    dsmPlaintext=nil (grup tak punya device-sent message).
+	plaintext, err := proto.Marshal(message)
+	if err != nil {
+		return "", fmt.Errorf("gagal marshal message: %w", err)
 	}
-	node.Attrs["phash"] = phash
+	toNodes, includeIdentity, err := di.EncryptMessageForDevices(
+		ctx, devices, msgID, plaintext, nil, waBinary.Attrs{},
+	)
+	if err != nil {
+		return "", fmt.Errorf("gagal enkripsi pairwise: %w", err)
+	}
+
+	msgType := groupMessageType(message)
+	var deviceIdentity *waBinary.Node
+	if includeIdentity {
+		if n := makeDeviceIdentityNode(client); n != nil {
+			deviceIdentity = n
+		}
+	}
+
+	// 3) Bongkar tiap <to jid><enc> → kirim sebagai stanza terarah per-device.
+	var sent, failed int
+	for i := range toNodes {
+		to := &toNodes[i]
+		devJID, _ := to.Attrs["jid"].(types.JID)
+		kids := to.GetChildren()
+		if len(kids) == 0 {
+			continue
+		}
+		enc := kids[0] // node <enc>
+
+		content := []waBinary.Node{enc}
+		encType, _ := enc.Attrs["type"].(string)
+		if deviceIdentity != nil && encType == "pkmsg" {
+			content = append(content, *deviceIdentity)
+		}
+
+		attrs := waBinary.Attrs{
+			"to":          chat,
+			"id":          msgID,
+			"type":        msgType,
+			"participant": devJID,
+		}
+		if addrMode != "" {
+			attrs["addressing_mode"] = string(addrMode)
+		}
+
+		if serr := di.SendNode(ctx, waBinary.Node{Tag: "message", Attrs: attrs, Content: content}); serr != nil {
+			failed++
+			if ExcludeDebug {
+				log.Printf("[sembunyi] StrategyB gagal kirim ke device %s: %v", devJID, serr)
+			}
+			continue
+		}
+		sent++
+	}
 
 	if ExcludeDebug {
-		log.Printf("[sembunyi] StrategyB device_penerima=%d phash=%s (tak ada skmsg ditambahkan)", len(allDevices), phash)
+		log.Printf("[sembunyi] StrategyB per-device: total_device=%d terkirim=%d gagal=%d type=%q id=%s",
+			len(toNodes), sent, failed, msgType, msgID)
 	}
-
-	// KIRIM apa adanya — TANPA menambahkan <enc type=skmsg>.
-	if serr := di.SendNode(ctx, *node); serr != nil {
-		return phash, fmt.Errorf("gagal kirim node pairwise: %w", serr)
+	if sent == 0 {
+		return "", fmt.Errorf("tak ada stanza yang berhasil terkirim (gagal=%d)", failed)
 	}
-	return phash, nil
+	return "", nil
 }
 
-// participantListHashV2 mereplikasi whatsmeow (sha256 atas ADString terurut, 6 byte
-// pertama, base64 raw-std, prefix "2:").
-func participantListHashV2(participants []types.JID) string {
-	ss := make([]string, len(participants))
-	for i, p := range participants {
-		ss[i] = p.ADString()
+// makeDeviceIdentityNode mereplikasi whatsmeow: <device-identity> berisi Account
+// ter-marshal. Dipakai saat enc bertipe pkmsg (prekey message).
+func makeDeviceIdentityNode(client *whatsmeow.Client) *waBinary.Node {
+	if client.Store == nil || client.Store.Account == nil {
+		return nil
 	}
-	sort.Strings(ss)
-	h := sha256.Sum256([]byte(strings.Join(ss, "")))
-	return "2:" + base64.RawStdEncoding.EncodeToString(h[:6])
+	b, err := proto.Marshal(client.Store.Account)
+	if err != nil {
+		return nil
+	}
+	return &waBinary.Node{Tag: "device-identity", Content: b}
 }
 
-// callPrepareMessageNode memanggil (*DangerousInternalClient).PrepareMessageNode via
-// reflection. Param terakhir (nodeExtraParams) bertipe unexported → dibangun via
-// reflect.New; field addressingMode di-set lewat unsafe untuk grup mode LID.
-//
-// Tanda tangan target:
-//
-//	PrepareMessageNode(ctx, to types.JID, id types.MessageID, message *waE2E.Message,
-//	    participants []types.JID, plaintext, dsmPlaintext []byte,
-//	    timings *MessageDebugTimings, extraParams nodeExtraParams)
-//	    (*waBinary.Node, []types.JID, error)
-//
-// plaintext = proto.Marshal(message) MENTAH (padding dilakukan di dalam enkripsi
-// per-device oleh whatsmeow). dsmPlaintext = nil (grup tak punya device-sent message).
-func callPrepareMessageNode(
-	ctx context.Context,
-	di *whatsmeow.DangerousInternalClient,
-	to types.JID,
-	msgID string,
-	message *waProto.Message,
-	participants []types.JID,
-	addrMode types.AddressingMode,
-) (node *waBinary.Node, allDevices []types.JID, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panggilan PrepareMessageNode gagal (API whatsmeow mungkin berubah): %v", r)
-		}
-	}()
-
-	plaintext, merr := proto.Marshal(message)
-	if merr != nil {
-		return nil, nil, fmt.Errorf("gagal marshal message: %w", merr)
+// groupMessageType mereplikasi getTypeFromMessage whatsmeow untuk atribut `type`
+// pada node <message> (cukup subset yang relevan; default "text").
+func groupMessageType(msg *waProto.Message) string {
+	switch {
+	case msg.GetReactionMessage() != nil, msg.GetEncReactionMessage() != nil:
+		return "reaction"
+	case msg.GetPollCreationMessage() != nil, msg.GetPollUpdateMessage() != nil:
+		return "poll"
+	case msg.GetImageMessage() != nil, msg.GetVideoMessage() != nil,
+		msg.GetAudioMessage() != nil, msg.GetDocumentMessage() != nil,
+		msg.GetStickerMessage() != nil:
+		return "media"
+	default:
+		return "text"
 	}
-
-	method := reflect.ValueOf(di).MethodByName("PrepareMessageNode")
-	if !method.IsValid() {
-		return nil, nil, fmt.Errorf("DangerousInternals.PrepareMessageNode tidak ditemukan (versi whatsmeow tak kompatibel)")
-	}
-	mt := method.Type()
-	if mt.NumIn() != 9 {
-		return nil, nil, fmt.Errorf("tanda tangan PrepareMessageNode berubah (arg=%d, diharapkan 9)", mt.NumIn())
-	}
-
-	// Bangun nilai zero untuk nodeExtraParams (param terakhir) lalu set addressingMode.
-	extra := reflect.New(mt.In(8)).Elem()
-	if addrMode != "" {
-		if f := extra.FieldByName("addressingMode"); f.IsValid() {
-			reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).
-				Elem().
-				Set(reflect.ValueOf(addrMode))
-		}
-	}
-
-	out := method.Call([]reflect.Value{
-		reflect.ValueOf(ctx),
-		reflect.ValueOf(to),
-		reflect.ValueOf(msgID),
-		reflect.ValueOf(message),
-		reflect.ValueOf(participants),
-		reflect.ValueOf(plaintext),
-		reflect.ValueOf([]byte(nil)),
-		reflect.ValueOf(&whatsmeow.MessageDebugTimings{}),
-		extra,
-	})
-
-	if ev := out[2].Interface(); ev != nil {
-		if e, ok := ev.(error); ok {
-			return nil, nil, e
-		}
-	}
-	node, _ = out[0].Interface().(*waBinary.Node)
-	allDevices, _ = out[1].Interface().([]types.JID)
-	return node, allDevices, nil
 }
 
 // SendSecretText = pembungkus praktis untuk pesan teks.
