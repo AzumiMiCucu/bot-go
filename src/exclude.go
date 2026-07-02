@@ -572,6 +572,11 @@ func sendGroupSkmsgHide(
 		Content: ciphertext,
 		Attrs:   waBinary.Attrs{"v": "2", "type": "skmsg"},
 	}
+	// WAJIB utk media (gambar/video/stiker/dll): tanpa mediatype, WA tak me-render
+	// media walau dekripsi sukses. sendGroup asli whatsmeow selalu men-set ini.
+	if mt := mediaTypeFromMessageLocal(message); mt != "" {
+		skEnc.Attrs["mediatype"] = mt
+	}
 	if hideOnFail {
 		// INI kuncinya: target yang gagal dekripsi disembunyikan (bukan placeholder).
 		skEnc.Attrs["decrypt-fail"] = "hide"
@@ -597,6 +602,61 @@ func padMessageLocal(plaintext []byte) []byte {
 		pad = 0x0f
 	}
 	return append(plaintext, bytes.Repeat([]byte{pad}, int(pad))...)
+}
+
+// mediaTypeFromMessageLocal mereplika whatsmeow.getMediaTypeFromMessage — nilai atribut
+// `mediatype` pada node enc. Kosong = pesan non-media (teks biasa).
+func mediaTypeFromMessageLocal(msg *waProto.Message) string {
+	switch {
+	case msg.ViewOnceMessage != nil:
+		return mediaTypeFromMessageLocal(msg.ViewOnceMessage.Message)
+	case msg.ViewOnceMessageV2 != nil:
+		return mediaTypeFromMessageLocal(msg.ViewOnceMessageV2.Message)
+	case msg.ViewOnceMessageV2Extension != nil:
+		return mediaTypeFromMessageLocal(msg.ViewOnceMessageV2Extension.Message)
+	case msg.LottieStickerMessage != nil:
+		return mediaTypeFromMessageLocal(msg.LottieStickerMessage.Message)
+	case msg.EphemeralMessage != nil:
+		return mediaTypeFromMessageLocal(msg.EphemeralMessage.Message)
+	case msg.DocumentWithCaptionMessage != nil:
+		return mediaTypeFromMessageLocal(msg.DocumentWithCaptionMessage.Message)
+	case msg.ExtendedTextMessage != nil && msg.ExtendedTextMessage.Title != nil:
+		return "url"
+	case msg.ImageMessage != nil:
+		return "image"
+	case msg.StickerMessage != nil:
+		return "sticker"
+	case msg.DocumentMessage != nil:
+		return "document"
+	case msg.AudioMessage != nil:
+		if msg.AudioMessage.GetPTT() {
+			return "ptt"
+		}
+		return "audio"
+	case msg.VideoMessage != nil:
+		if msg.VideoMessage.GetGifPlayback() {
+			return "gif"
+		}
+		return "video"
+	case msg.ContactMessage != nil:
+		return "vcard"
+	case msg.ContactsArrayMessage != nil:
+		return "contact_array"
+	case msg.ListMessage != nil:
+		return "list"
+	case msg.ListResponseMessage != nil:
+		return "list_response"
+	case msg.ButtonsResponseMessage != nil:
+		return "buttons_response"
+	case msg.OrderMessage != nil:
+		return "order"
+	case msg.ProductMessage != nil:
+		return "product"
+	case msg.InteractiveResponseMessage != nil:
+		return "native_flow_response"
+	default:
+		return ""
+	}
 }
 
 // participantListHashLocal mereplika whatsmeow.participantListHashV2.
