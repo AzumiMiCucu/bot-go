@@ -350,9 +350,9 @@ func (b *ButtonBuilder) Send(ctx *ContextBot, jid types.JID) error {
 	return err
 }
 
-// SendWithID mengirim button message dan mengembalikan ID pesan terkirim,
-// agar pemanggil bisa mendaftarkannya ke reply-router (interaksi berbasis ID).
-func (b *ButtonBuilder) SendWithID(ctx *ContextBot, jid types.JID) (string, error) {
+// buildInteractive membangun pesan interactive (native_flow) + biz-node + msgID,
+// dipakai bersama oleh SendWithID (kirim normal) & SendPremiumToChatWithID (exclude).
+func (b *ButtonBuilder) buildInteractive(ctx *ContextBot) (*waE2E.Message, waBinary.Node, string, error) {
 	ci := b.contextInfo
 	if ci == nil && ctx.Msg != nil {
 		senderStr := ctx.Msg.Info.Sender.ToNonAD().String()
@@ -374,7 +374,7 @@ func (b *ButtonBuilder) SendWithID(ctx *ContextBot, jid types.JID) (string, erro
 
 	card, err := b.ToCard(ctx)
 	if err != nil {
-		return "", err
+		return nil, waBinary.Node{}, "", err
 	}
 	card.ContextInfo = ci
 
@@ -398,12 +398,32 @@ func (b *ButtonBuilder) SendWithID(ctx *ContextBot, jid types.JID) (string, erro
 			},
 		},
 	}
-	msgID := GenerateAndroidMessageID()
+	return msg, bizNode, GenerateAndroidMessageID(), nil
+}
+
+// SendWithID mengirim button message dan mengembalikan ID pesan terkirim,
+// agar pemanggil bisa mendaftarkannya ke reply-router (interaksi berbasis ID).
+func (b *ButtonBuilder) SendWithID(ctx *ContextBot, jid types.JID) (string, error) {
+	msg, bizNode, msgID, err := b.buildInteractive(ctx)
+	if err != nil {
+		return "", err
+	}
 	_, err = ctx.Client.SendMessage(context.Background(), jid.ToNonAD(), msg, whatsmeow.SendRequestExtra{
 		ID:              msgID,
 		AdditionalNodes: &[]waBinary.Node{bizNode},
 	})
 	return string(msgID), err
+}
+
+// SendPremiumToChatWithID mengirim button ke ChatJID sebagai hasil PREMIUM:
+// di grup, member non-premium di-exclude (tak bisa lihat). biz-node native_flow
+// tetap diteruskan agar tombol render untuk penerima premium.
+func (b *ButtonBuilder) SendPremiumToChatWithID(ctx *ContextBot) (string, error) {
+	msg, bizNode, msgID, err := b.buildInteractive(ctx)
+	if err != nil {
+		return "", err
+	}
+	return SendPremiumRaw(ctx.Client, ctx.ChatJID, msg, msgID, bizNode)
 }
 
 func (b *ButtonBuilder) SendToChat(ctx *ContextBot) error {
@@ -665,8 +685,9 @@ func (b *AIRichBuilder) Send(ctx *ContextBot, jid types.JID) error {
 	return err
 }
 
-// SendWithID mengirim Rich UI dan mengembalikan ID pesan terkirim (untuk reply-router).
-func (b *AIRichBuilder) SendWithID(ctx *ContextBot, jid types.JID) (string, error) {
+// buildRich membangun pesan AIRich + msgID, dipakai bersama oleh SendWithID
+// (kirim normal) & SendPremiumToChatWithID (exclude non-premium).
+func (b *AIRichBuilder) buildRich(ctx *ContextBot) (*waE2E.Message, string) {
 	// Menambahkan footer jika di-set
 	finalSections := append([]map[string]interface{}{}, b.sections...)
 	if b.footer != "" {
@@ -734,9 +755,21 @@ func (b *AIRichBuilder) SendWithID(ctx *ContextBot, jid types.JID) (string, erro
 		},
 	}
 
-	msgID := GenerateAndroidMessageID()
+	return msg, GenerateAndroidMessageID()
+}
+
+// SendWithID mengirim Rich UI dan mengembalikan ID pesan terkirim (untuk reply-router).
+func (b *AIRichBuilder) SendWithID(ctx *ContextBot, jid types.JID) (string, error) {
+	msg, msgID := b.buildRich(ctx)
 	_, err := ctx.Client.SendMessage(context.Background(), jid.ToNonAD(), msg, whatsmeow.SendRequestExtra{ID: msgID})
 	return string(msgID), err
+}
+
+// SendPremiumToChatWithID mengirim AIRich ke ChatJID sebagai hasil PREMIUM:
+// di grup, member non-premium di-exclude (tak bisa lihat).
+func (b *AIRichBuilder) SendPremiumToChatWithID(ctx *ContextBot) (string, error) {
+	msg, msgID := b.buildRich(ctx)
+	return SendPremiumRaw(ctx.Client, ctx.ChatJID, msg, msgID)
 }
 
 func (b *AIRichBuilder) SendToChat(ctx *ContextBot) error {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
@@ -247,6 +248,35 @@ func SendPremiumMessage(client *whatsmeow.Client, chat types.JID, msg *waProto.M
 // SendPremiumText = pembungkus teks untuk SendPremiumMessage.
 func SendPremiumText(client *whatsmeow.Client, chat types.JID, text string) (string, error) {
 	return SendPremiumMessage(client, chat, &waProto.Message{Conversation: proto.String(text)})
+}
+
+// SendPremiumRaw = versi low-level SendPremiumMessage: memakai `msgID` yang sudah
+// ditentukan pemanggil (agar bisa didaftarkan ke reply-router) dan mendukung
+// `extraNodes` (mis. <biz> native_flow utk tombol) yang harus ikut di stanza.
+// Di grup ber-non-premium → jalur exclude (skmsg-hide). Selain itu → kirim normal.
+func SendPremiumRaw(client *whatsmeow.Client, chat types.JID, msg *waProto.Message, msgID string, extraNodes ...waBinary.Node) (string, error) {
+	ctx := context.Background()
+	if msgID == "" {
+		msgID = GenerateAndroidMessageID()
+	}
+	normalSend := func() (string, error) {
+		extra := whatsmeow.SendRequestExtra{ID: msgID}
+		if len(extraNodes) > 0 {
+			nodes := append([]waBinary.Node(nil), extraNodes...)
+			extra.AdditionalNodes = &nodes
+		}
+		_, err := client.SendMessage(ctx, chat.ToNonAD(), msg, extra)
+		return msgID, err
+	}
+	if chat.Server != types.GroupServer {
+		return normalSend()
+	}
+	exclude := nonPremiumGroupMembers(ctx, client, chat)
+	if len(exclude) == 0 {
+		// Semua member premium (atau info grup gagal) → kirim normal.
+		return normalSend()
+	}
+	return SendGroupExcluding(ctx, client, chat, msg, msgID, exclude, false, extraNodes...)
 }
 
 // PremiumImage (metode ContextBot) mengunggah & mengirim gambar sebagai hasil

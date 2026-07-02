@@ -102,6 +102,7 @@ func SendGroupExcluding(
 	msgID string,
 	exclude []types.JID,
 	excludeMe bool,
+	extraNodes ...waBinary.Node, // node tambahan (mis. biz native_flow utk tombol) diteruskan ke stanza
 ) (string, error) {
 	if client == nil || client.Store == nil || client.Store.ID == nil {
 		return "", fmt.Errorf("client belum siap (belum login)")
@@ -207,7 +208,7 @@ func SendGroupExcluding(
 
 	// 6) Bangun & kirim skmsg sendiri. decrypt-fail=hide diaktifkan HANYA saat ada
 	//    target ter-exclude (kalau tak ada, kirim normal biar aman).
-	phash, err := sendGroupSkmsgHide(ctx, client, ownID, chat, message, msgID, participants, addrMode, realExcluded > 0)
+	phash, err := sendGroupSkmsgHide(ctx, client, ownID, chat, message, msgID, participants, addrMode, realExcluded > 0, extraNodes...)
 	if ExcludeDebug {
 		log.Printf("[sembunyi] StrategyC(skmsg+hide) selesai phash=%q hide=%v err=%v", phash, realExcluded > 0, err)
 	}
@@ -506,6 +507,7 @@ func sendGroupSkmsgHide(
 	participants []types.JID,
 	addrMode types.AddressingMode,
 	hideOnFail bool,
+	extraNodes ...waBinary.Node,
 ) (phash string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -582,9 +584,14 @@ func sendGroupSkmsgHide(
 		skEnc.Attrs["decrypt-fail"] = "hide"
 	}
 	node.Content = append(node.GetChildren(), skEnc)
+	// Node tambahan (mis. <biz><interactive native_flow> utk tombol) = sibling di stanza
+	// <message>, persis SendRequestExtra.AdditionalNodes pada jalur kirim normal.
+	if len(extraNodes) > 0 {
+		node.Content = append(node.GetChildren(), extraNodes...)
+	}
 
 	if ExcludeDebug {
-		log.Printf("[sembunyi] StrategyC device_penerima=%d phash=%s hide=%v id=%s", len(allDevices), phash, hideOnFail, msgID)
+		log.Printf("[sembunyi] StrategyC device_penerima=%d phash=%s hide=%v id=%s extra=%d", len(allDevices), phash, hideOnFail, msgID, len(extraNodes))
 	}
 
 	if serr := di.SendNode(ctx, *node); serr != nil {

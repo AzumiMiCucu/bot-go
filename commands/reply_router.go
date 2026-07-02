@@ -21,7 +21,7 @@ import (
 //   - Reply ke pesan non-bot, atau pesan tanpa quote, diabaikan.
 
 type ReplyContext struct {
-	Type      string      // "donghua","shinigami","kompas","samehada","ytmusic","referral"
+	Type      string      // "donghua","shinigami","doujin","kompas","samehada","ytmusic","referral"
 	Data      interface{} // pointer ke struct state per-fitur
 	ExpiresAt time.Time
 }
@@ -147,6 +147,8 @@ func RouteReply(ctx *ContextBot) bool {
 		_ = handleDonghuaReply(ctx, rc)
 	case "shinigami":
 		_ = handleShinigamiReply(ctx, rc)
+	case "doujin":
+		_ = handleDoujinReply(ctx, rc)
 	case "kompas":
 		_ = handleKompasReply(ctx, rc)
 	case "samehada":
