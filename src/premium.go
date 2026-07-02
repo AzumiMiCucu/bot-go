@@ -229,20 +229,10 @@ func nonPremiumGroupMembers(ctx context.Context, client *whatsmeow.Client, chat 
 }
 
 // SendPremiumMessage mengirim `msg` ke `chat`. Di grup, member non-premium
-// di-exclude (tak bisa baca). Di japri, kirim biasa. Mengembalikan message-ID/phash.
+// di-exclude (tak bisa baca). Di japri, kirim biasa. SELALU mengembalikan message-ID
+// pesan terkirim (bukan phash) agar bisa didaftarkan ke reply-router.
 func SendPremiumMessage(client *whatsmeow.Client, chat types.JID, msg *waProto.Message) (string, error) {
-	ctx := context.Background()
-	if chat.Server != types.GroupServer {
-		resp, err := client.SendMessage(ctx, chat, msg, AndroidExtra())
-		return resp.ID, err
-	}
-	exclude := nonPremiumGroupMembers(ctx, client, chat)
-	if len(exclude) == 0 {
-		// Semua member premium (atau info grup gagal) → kirim normal.
-		resp, err := client.SendMessage(ctx, chat, msg, AndroidExtra())
-		return resp.ID, err
-	}
-	return SendGroupExcluding(ctx, client, chat, msg, "", exclude, false)
+	return SendPremiumRaw(client, chat, msg, "")
 }
 
 // SendPremiumText = pembungkus teks untuk SendPremiumMessage.
@@ -276,7 +266,13 @@ func SendPremiumRaw(client *whatsmeow.Client, chat types.JID, msg *waProto.Messa
 		// Semua member premium (atau info grup gagal) → kirim normal.
 		return normalSend()
 	}
-	return SendGroupExcluding(ctx, client, chat, msg, msgID, exclude, false, extraNodes...)
+	// PENTING: SendGroupExcluding mengembalikan phash, BUKAN message-ID. Reply-router
+	// di-key oleh message-ID (yang dikutip saat user membalas), jadi kembalikan `msgID`
+	// yang kita kontrol (= id stanza terkirim), bukan phash-nya.
+	if _, err := SendGroupExcluding(ctx, client, chat, msg, msgID, exclude, false, extraNodes...); err != nil {
+		return "", err
+	}
+	return msgID, nil
 }
 
 // PremiumImage (metode ContextBot) mengunggah & mengirim gambar sebagai hasil
