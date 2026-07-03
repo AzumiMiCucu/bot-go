@@ -174,6 +174,7 @@ func (c *captureLogger) Debugf(msg string, args ...interface{}) {
 	if strings.HasSuffix(c.mod, "/Recv") && msg == "%s" && len(args) == 1 {
 		if s, ok := args[0].(string); ok {
 			CaptureRawNode(s)
+			// CaptureRawNewsletterNode(s) // NONAKTIF: membebani receive-loop (hex dump penuh tiap node)
 		}
 	}
 	c.base.Debugf(msg, args...)

@@ -10,6 +10,8 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
+	"bot-go/src"
+
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
@@ -60,6 +62,14 @@ func init() {
 		Pattern:     regexp.MustCompile(`(?i)^\s*(hidetag|tagall|pengumuman)\s*$`),
 		Description: "Tag seluruh member grup (khusus admin)",
 		Execute:     ExecuteHidetag,
+	})
+	RegisterCommand(Command{
+		Name:        "Hidetag Personal",
+		Category:    "Group",
+		Aliases:     []string{"hidetagp", "tagp", "taghantu"},
+		Pattern:     regexp.MustCompile(`(?i)^(?:hidetagp|tagp|taghantu)(?:\s+([\s\S]+))?\s*$`),
+		Description: "Tag personal: tiap member melihat mention DIRINYA sendiri, satu pesan per orang (khusus admin)",
+		Execute:     ExecuteHidetagPersonal,
 	})
 	RegisterCommand(Command{
 		Name:        "Link Grup",
@@ -469,6 +479,47 @@ func ExecuteHidetag(ctx *ContextBot) error {
 
 	_, err = ctx.Client.SendMessage(context.Background(), ctx.ChatJID, msg, AndroidExtra())
 	return err
+}
+
+// ExecuteHidetagPersonal = "hidetag personal". Berbeda dari hidetag biasa (satu pesan
+// berisi mention SEMUA orang), command ini mengirim SATU pesan per anggota yang HANYA
+// bisa dibaca anggota itu, berisi mention DIRINYA sendiri. Anggota lain lihat kosong.
+// Jadi tiap orang seolah menerima satu pesan tag yang menyebut namanya sendiri.
+// Mekanisme = src.SendGroupPersonalMention (rotasi sender-key + decrypt-fail=hide).
+func ExecuteHidetagPersonal(ctx *ContextBot) error {
+	if !guardAdminAccess(ctx) {
+		return nil
+	}
+
+	teks := strings.TrimSpace(ctx.Args)
+
+	build := func(target types.JID) *waProto.Message {
+		body := "@" + target.User
+		if teks != "" {
+			body = teks + "\n" + body
+		}
+		return &waProto.Message{
+			ExtendedTextMessage: &waProto.ExtendedTextMessage{
+				Text: proto.String(body),
+				ContextInfo: &waProto.ContextInfo{
+					MentionedJID: []string{target.String()},
+				},
+			},
+		}
+	}
+
+	_ = ctx.React("⏳")
+	sent, total, err := src.SendGroupPersonalMention(ctx.Ctx, ctx.Client, ctx.ChatJID, build, true, nil)
+	if err != nil {
+		_ = ctx.React("❌")
+		return ctx.Reply("❌ Gagal mengirim tag personal.\n_" + err.Error() + "_")
+	}
+	if sent < total && sent == 0 {
+		_ = ctx.React("❌")
+		return ctx.Reply("❌ Tak ada pesan yang berhasil terkirim.")
+	}
+	_ = ctx.React("✅")
+	return nil
 }
 
 func ExecuteGetLink(ctx *ContextBot) error {

@@ -666,6 +666,114 @@ func mediaTypeFromMessageLocal(msg *waProto.Message) string {
 	}
 }
 
+// SendGroupPersonalMention = "hidetag personal". SETIAP anggota grup menerima SATU
+// pesan yang HANYA bisa DIA baca, berisi mention dirinya sendiri (@dia). Anggota lain
+// menerima skmsg yang sama (server WA selalu fan-out), tetapi tak punya sender-key
+// baru untuk pesan itu → gagal dekripsi → decrypt-fail=hide → KOSONG bagi mereka.
+//
+// Efeknya: tiap orang seolah menerima satu pesan tag yang menyebut DIRINYA, padahal
+// isi ciphertext-nya berbeda per orang. Ini persis mekanisme [[feature-exclude-recipients]]
+// STRATEGY C, hanya dijalankan berulang — sekali per anggota — dengan participant
+// tunggal (si target) tiap kalinya.
+//
+// build(target) mengembalikan *waProto.Message khusus utk target itu (biasanya
+// ExtendedTextMessage dgn ContextInfo.MentionedJID = [target]). Bila build balik nil,
+// target itu dilewati.
+//
+// excludeMe=true → bot sendiri tak jadi sasaran (tak menerima N pesan ke device-nya).
+// onProgress (boleh nil) dipanggil tiap satu pesan sukses terkirim.
+//
+// Mengembalikan (jumlah_terkirim, total_sasaran, error).
+func SendGroupPersonalMention(
+	ctx context.Context,
+	client *whatsmeow.Client,
+	chat types.JID,
+	build func(target types.JID) *waProto.Message,
+	excludeMe bool,
+	onProgress func(sent, total int),
+) (sent int, total int, err error) {
+	if client == nil || client.Store == nil || client.Store.ID == nil {
+		return 0, 0, fmt.Errorf("client belum siap (belum login)")
+	}
+	if chat.Server != types.GroupServer {
+		return 0, 0, fmt.Errorf("personal mention hanya untuk grup (g.us)")
+	}
+	if build == nil {
+		return 0, 0, fmt.Errorf("build message kosong")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	gi, err := client.GetGroupInfo(ctx, chat)
+	if err != nil {
+		return 0, 0, fmt.Errorf("gagal ambil info grup: %w", err)
+	}
+	addrMode := gi.AddressingMode
+
+	// Identitas pengirim sesuai addressing mode (sama seperti SendGroupExcluding).
+	ownID := client.Store.GetJID()
+	if addrMode == types.AddressingModeLID {
+		ownID = client.Store.GetLID()
+	}
+	ownPNUser := client.Store.GetJID().ToNonAD().User
+	ownLIDUser := client.Store.GetLID().ToNonAD().User
+
+	// Sasaran = anggota yang punya .JID (bentuk yang dipakai whatsmeow utk kirim &
+	// pembagian SKDM). Anggota yang cuma punya LID kosong .JID → tak bisa jadi
+	// participant tunggal skmsg, dilewati.
+	targets := make([]types.JID, 0, len(gi.Participants))
+	for _, p := range gi.Participants {
+		if p.JID.User == "" {
+			continue
+		}
+		if excludeMe {
+			isMe := (ownPNUser != "" && p.JID.ToNonAD().User == ownPNUser) ||
+				(!p.LID.IsEmpty() && ownLIDUser != "" && p.LID.ToNonAD().User == ownLIDUser)
+			if isMe {
+				continue
+			}
+		}
+		targets = append(targets, p.JID)
+	}
+	total = len(targets)
+	if total == 0 {
+		return 0, 0, fmt.Errorf("tak ada anggota yang bisa ditarget")
+	}
+
+	// Serialkan seluruh operasi (rotasi sender-key + kirim) supaya tak balapan dgn
+	// jalur kirim lain — messageSendLock internal whatsmeow tak terekspos.
+	excludeSendMu.Lock()
+	defer excludeSendMu.Unlock()
+
+	for _, t := range targets {
+		msg := build(t)
+		if msg == nil {
+			continue
+		}
+		// Rotasi sender-key BOT ke kunci BARU (keyID baru) sebelum tiap pesan. SKDM
+		// kunci baru itu HANYA dibagikan ke `t`, jadi anggota lain tak bisa mendekripsi
+		// pesan ini → disembunyikan. Ratchet maju: pemegang key lama tak bisa derive
+		// pesan berkey baru → tetap kosong.
+		rotateGroupSenderKey(ctx, client, chat)
+
+		if _, serr := sendGroupSkmsgHide(
+			ctx, client, ownID, chat, msg, GenerateAndroidMessageID(),
+			[]types.JID{t}, addrMode, true,
+		); serr != nil {
+			if ExcludeDebug {
+				log.Printf("[hidetagp] gagal kirim ke %s: %v", t.User, serr)
+			}
+			continue
+		}
+		sent++
+		if onProgress != nil {
+			onProgress(sent, total)
+		}
+	}
+	return sent, total, nil
+}
+
 // participantListHashLocal mereplika whatsmeow.participantListHashV2.
 func participantListHashLocal(participants []types.JID) string {
 	s := make([]string, len(participants))

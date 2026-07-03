@@ -33,8 +33,16 @@ func eventHandler(evt interface{}) {
 			go client.SubscribePresence(context.Background(), v.Info.Chat)
 		}
 
+		// [CAPTURE] Dump story/status saluran yang disiarkan via status@broadcast.
+		go src.CaptureStatusMessage(v)
+
 		// Proses async agar receive-loop whatsmeow tidak terblokir
 		go MessageHandler(client, v)
+
+	case *events.NewsletterLiveUpdate:
+		// [CAPTURE] Update/story saluran yang diikuti bot → dump struktur asli
+		// ke tmp/capture_channel_status/*.json (untuk kalibrasi command upswc).
+		go src.CaptureNewsletterLiveUpdate(v)
 
 	case *events.FBMessage:
 		// Pesan interop Meta (Messenger/Instagram ↔ WA) — sangat langka.
