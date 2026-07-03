@@ -26,6 +26,14 @@ func eventHandler(evt interface{}) {
 	switch v := evt.(type) {
 
 	case *events.Message:
+		// [HAPUS-VIA-REAKSI] Reaksi (emoji 🗑️/❌/🚮) dari owner/admin → hapus pesan.
+		// Reaksi datang sebagai events.Message ber-ReactionMessage; tangani terpisah
+		// karena tak punya teks/media dan akan di-drop oleh MessageHandler biasa.
+		if v.Message != nil && v.Message.GetReactionMessage() != nil {
+			go commands.HandleReactionDelete(client, v)
+			return
+		}
+
 		// [OPSIONAL TAPI PENTING UNTUK JAPRI]
 		// Subscribe ke pengirim agar bot bisa mendeteksi saat dia mengetik di kemudian waktu
 		if !v.Info.IsGroup {
