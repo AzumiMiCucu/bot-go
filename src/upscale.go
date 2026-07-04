@@ -69,6 +69,12 @@ func UpscaleImage(imageData []byte, opts UpscaleOptions) ([]byte, error) {
 	}
 	opts = opts.withDefaults()
 
+	// Stiker WA berformat WebP → konversi ke JPEG di memori (waifu2x tolak WebP).
+	imageData, err := ToJPEGForAPI(imageData)
+	if err != nil {
+		return nil, err
+	}
+
 	// 1) Upload + minta proses.
 	hash, err := waifu2xUpload(imageData, opts)
 	if err != nil {

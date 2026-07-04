@@ -66,7 +66,7 @@ func HandleReactionDelete(client *whatsmeow.Client, evt *events.Message) {
 		isOwner = reactorUser == src.AppConfig.OwnerNumber || reactorAlt == src.AppConfig.OwnerNumber
 	}
 
-	// ContextBot minimal supaya bisa pakai helper admin (isUserAdmin/botIsGroupAdmin).
+	// ContextBot minimal supaya bisa pakai helper admin (userIsAdminIn/botAdminStatus).
 	ctx := &ContextBot{
 		Client:    client,
 		Msg:       evt,
@@ -78,34 +78,49 @@ func HandleReactionDelete(client *whatsmeow.Client, evt *events.Message) {
 		Ctx:       context.Background(),
 	}
 
-	// Otorisasi pelaku: owner selalu boleh; selain itu wajib admin grup.
-	if !isOwner {
-		if !evt.Info.IsGroup {
-			return // di japri hanya owner
-		}
-		if admin, _ := isUserAdmin(ctx); !admin {
-			return
-		}
-	}
-
 	chat := evt.Info.Chat
 	targetID := key.GetID()
+	targetFromBot := key.GetFromMe()
 
-	// Kasus 1: target adalah pesan BOT sendiri → revoke pesan sendiri (EmptyJID).
-	if key.GetFromMe() {
-		revoke := client.BuildRevoke(chat, types.EmptyJID, targetID)
-		if _, err := client.SendMessage(context.Background(), chat, revoke, src.AndroidExtra()); err != nil {
-			src.Print("[reactdelete] gagal hapus pesan bot: %v", err)
+	// --------------------------------------------------------------
+	// JAPRI: tak ada konsep admin & tak bisa hapus pesan orang lain.
+	// Hanya owner yang boleh, dan hanya untuk pesan bot sendiri.
+	// --------------------------------------------------------------
+	if !evt.Info.IsGroup {
+		if isOwner && targetFromBot {
+			revokeReacted(client, chat, types.EmptyJID, targetID, "pesan bot (japri)")
 		}
 		return
 	}
 
-	// Kasus 2: target pesan orang lain → butuh BOT admin grup.
-	if !evt.Info.IsGroup {
-		return // tak bisa menghapus pesan orang lain di japri
+	// --------------------------------------------------------------
+	// GRUP: satu kali fetch GroupInfo (FRESH, bukan cache) untuk menentukan
+	// status admin PELAKU dan status admin BOT sekaligus — hindari fetch ganda
+	// & data basi (mis. bot baru dipromosikan admin, cache 1 jam masih "bukan").
+	// --------------------------------------------------------------
+	gi, err := client.GetGroupInfo(context.Background(), chat)
+	if err != nil {
+		src.Print("[reactdelete] gagal ambil info grup: %v", err)
+		return
 	}
-	if !botIsGroupAdmin(ctx, chat.ToNonAD().String()) {
-		return // bot bukan admin → tak bisa menghapus; diam
+
+	// Otorisasi PELAKU: owner selalu boleh; selain itu wajib admin grup.
+	if !isOwner && !userIsAdminIn(ctx, gi) {
+		return
+	}
+
+	// Kasus 1: target pesan BOT sendiri → revoke pesan sendiri (EmptyJID).
+	// Tak butuh bot admin — bot selalu boleh menghapus pesannya sendiri.
+	if targetFromBot {
+		revokeReacted(client, chat, types.EmptyJID, targetID, "pesan bot")
+		return
+	}
+
+	// Kasus 2: target pesan orang lain → butuh BOT admin grup.
+	// botAdminStatus: found=false artinya partisipan bot tak terdeteksi (mis. grup
+	// LID) → jangan blokir, biar server WA yang memutuskan.
+	if found, admin := botAdminStatus(ctx, gi); found && !admin {
+		return // bot jelas BUKAN admin → tak bisa menghapus pesan orang; diam
 	}
 
 	// Pengirim asli pesan target ada di participant key reaksi.
@@ -119,8 +134,13 @@ func HandleReactionDelete(client *whatsmeow.Client, evt *events.Message) {
 		return // tanpa participant tak bisa revoke pesan orang lain
 	}
 
+	revokeReacted(client, chat, sender, targetID, "pesan member")
+}
+
+// revokeReacted membangun & mengirim pesan revoke untuk sebuah target reaksi.
+func revokeReacted(client *whatsmeow.Client, chat, sender types.JID, targetID, label string) {
 	revoke := client.BuildRevoke(chat, sender, targetID)
 	if _, err := client.SendMessage(context.Background(), chat, revoke, src.AndroidExtra()); err != nil {
-		src.Print("[reactdelete] gagal hapus pesan member: %v", err)
+		src.Print("[reactdelete] gagal hapus %s: %v", label, err)
 	}
 }

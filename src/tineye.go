@@ -85,6 +85,12 @@ func TinEyeSearch(imageData []byte, fileName string) (*TinEyeResult, error) {
 		fileName = "upload.jpg"
 	}
 
+	// Stiker WA berformat WebP → konversi ke JPEG di memori (TinEye tolak WebP).
+	imageData, err := ToJPEGForAPI(imageData)
+	if err != nil {
+		return nil, err
+	}
+
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 	fw, err := w.CreateFormFile("image", fileName)
@@ -94,6 +100,11 @@ func TinEyeSearch(imageData []byte, fileName string) (*TinEyeResult, error) {
 	if _, err = fw.Write(imageData); err != nil {
 		return nil, err
 	}
+	// Parameter paging/urutan (sesuai skrip TinEye: offset/limit/sort/order).
+	_ = w.WriteField("offset", "0")
+	_ = w.WriteField("limit", "20")
+	_ = w.WriteField("sort", "score")
+	_ = w.WriteField("order", "desc")
 	if err = w.Close(); err != nil {
 		return nil, err
 	}

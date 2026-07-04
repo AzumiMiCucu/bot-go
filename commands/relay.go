@@ -40,6 +40,11 @@ var crmIgnoredFields = map[string]bool{
 	"deviceSentMessage":            true,
 }
 
+// crmSnipMaxBytes: batas ukuran JSON yang boleh dirender sebagai blok kode AIRich.
+// Di atas ini payload rich jadi besar (token di-embed) → berat & bikin lag; maka
+// kita fallback kirim sebagai file .json (lossless) alih-alih blok kode.
+const crmSnipMaxBytes = 8000
+
 func init() {
 	RegisterCommand(Command{
 		Name:        "CRM Serialize",
@@ -81,24 +86,39 @@ func ExecuteCRM(ctx *ContextBot) error {
 	}
 	quoted := ci.GetQuotedMessage()
 
-	jsonBytes, err := protojson.MarshalOptions{Indent: "  "}.Marshal(quoted)
+	// Serialize RAW & LENGKAP: seluruh field pesan (protojson, EmitUnpopulated agar
+	// field default pun ikut terlihat) → bisa menyalin pesan PERSIS apa pun tipenya.
+	jsonBytes, err := protojson.MarshalOptions{Indent: "  ", EmitUnpopulated: false}.Marshal(quoted)
 	if err != nil {
 		return ctx.Reply("❌ Gagal serialize pesan: " + err.Error())
 	}
-	msgType := messageContentType(jsonBytes)
+	innerType, label := crmContentLabel(quoted)
 	snip := strings.TrimSpace(ctx.Args) != ""
 
 	if snip {
-		return ctx.Reply(fmt.Sprintf(
-			"🧬 *Relay message generator*\nType : %s\n\n```json\n%s\n```",
-			msgType, string(jsonBytes),
-		))
+		// --snip: tampilkan JSON sebagai blok kode ber-syntax-highlight via AIRich.
+		// PENGAMAN: bila JSON terlalu besar, jangan render blok kode (berat/lag) —
+		// fallback ke file .json supaya tetap utuh & ringan.
+		if len(jsonBytes) > crmSnipMaxBytes {
+			note := fmt.Sprintf("Relay message generator\nType : %s\n⚠️ %d byte — terlalu besar untuk blok kode, dikirim sebagai file.",
+				label, len(jsonBytes))
+			if err := sendJSONDocument(ctx, jsonBytes, innerType+".json", note); err != nil {
+				return ctx.Reply(err.Error())
+			}
+			return nil
+		}
+		return ctx.AIRich().
+			SetTitle("🧬 Relay message generator").
+			AddText(fmt.Sprintf("*Type:* %s\n*Size:* %d byte", label, len(jsonBytes))).
+			AddCode("json", string(jsonBytes)).
+			SetFooter("crm --snip • balas dgn `run` untuk relay").
+			SendToChat(ctx)
 	}
 
 	// Kirim sebagai file <tipe>.json agar bisa disimpan lalu di-`run` kapan saja.
-	fileName := msgType + ".json"
+	fileName := innerType + ".json"
 	if err := sendJSONDocument(ctx, jsonBytes, fileName,
-		fmt.Sprintf("Relay message generator\nType : %s", msgType)); err != nil {
+		fmt.Sprintf("Relay message generator\nType : %s", label)); err != nil {
 		return ctx.Reply(err.Error())
 	}
 	return nil
@@ -181,20 +201,74 @@ func ExecuteResend(ctx *ContextBot) error {
 
 // ----------------------------------------------------------------- helpers
 
+// crmUnwrap membuka bungkus container berlapis (deviceSent / ephemeral / viewOnce /
+// documentWithCaption / edited) untuk menemukan pesan KONTEN inti, sekaligus
+// mengembalikan rantai nama bungkus yang dilewati (untuk pelabelan tipe).
+// Batasi iterasi agar aman dari bungkus yang (secara teoritis) melingkar.
+func crmUnwrap(m *waProto.Message) (inner *waProto.Message, chain []string) {
+	for i := 0; i < 8 && m != nil; i++ {
+		switch {
+		case m.GetDeviceSentMessage().GetMessage() != nil:
+			chain = append(chain, "deviceSentMessage")
+			m = m.GetDeviceSentMessage().GetMessage()
+		case m.GetEphemeralMessage().GetMessage() != nil:
+			chain = append(chain, "ephemeralMessage")
+			m = m.GetEphemeralMessage().GetMessage()
+		case m.GetViewOnceMessage().GetMessage() != nil:
+			chain = append(chain, "viewOnceMessage")
+			m = m.GetViewOnceMessage().GetMessage()
+		case m.GetViewOnceMessageV2().GetMessage() != nil:
+			chain = append(chain, "viewOnceMessageV2")
+			m = m.GetViewOnceMessageV2().GetMessage()
+		case m.GetViewOnceMessageV2Extension().GetMessage() != nil:
+			chain = append(chain, "viewOnceMessageV2Extension")
+			m = m.GetViewOnceMessageV2Extension().GetMessage()
+		case m.GetDocumentWithCaptionMessage().GetMessage() != nil:
+			chain = append(chain, "documentWithCaptionMessage")
+			m = m.GetDocumentWithCaptionMessage().GetMessage()
+		case m.GetEditedMessage().GetMessage() != nil:
+			chain = append(chain, "editedMessage")
+			m = m.GetEditedMessage().GetMessage()
+		default:
+			return m, chain
+		}
+	}
+	return m, chain
+}
+
+// crmContentLabel mengembalikan (innerType, label) sebuah pesan:
+//   - innerType: nama field konten TERDALAM (mis. "imageMessage") → dipakai nama file.
+//   - label    : rantai bungkus + inner (mis. "viewOnceMessageV2→imageMessage") → tampilan.
+func crmContentLabel(m *waProto.Message) (innerType, label string) {
+	inner, chain := crmUnwrap(m)
+	innerType = messageContentType(inner)
+	if len(chain) == 0 {
+		return innerType, innerType
+	}
+	return innerType, strings.Join(chain, "→") + "→" + innerType
+}
+
 // messageContentType mengembalikan nama field konten pertama (mis. "imageMessage")
-// dari JSON protojson sebuah Message — untuk label & nama file.
-func messageContentType(jsonBytes []byte) string {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(jsonBytes, &m); err != nil {
+// dari sebuah Message (via protojson) — mengabaikan field non-konten.
+func messageContentType(m *waProto.Message) string {
+	if m == nil {
 		return "message"
 	}
-	for k := range m {
+	jsonBytes, err := protojson.Marshal(m)
+	if err != nil {
+		return "message"
+	}
+	var mp map[string]json.RawMessage
+	if err := json.Unmarshal(jsonBytes, &mp); err != nil {
+		return "message"
+	}
+	for k := range mp {
 		if !crmIgnoredFields[k] {
 			return k
 		}
 	}
 	// hanya berisi field yang diabaikan → ambil apa pun yang ada
-	for k := range m {
+	for k := range mp {
 		return k
 	}
 	return "message"

@@ -48,7 +48,7 @@ func ExecuteUpdate(ctx *ContextBot) error {
 
 	// Hard-reset ke origin/main: fetch dulu, lalu reset. `git pull` biasa bisa
 	// gagal saat ada perubahan lokal — hard reset selalu menyamakan ke remote.
-	script := "git fetch origin && git reset --hard origin/main"
+	script := "git fetch origin && git reset --hard origin/main && pm2 restart air"
 	cmd := exec.CommandContext(runCtx, "bash", "-lc", script)
 	cmd.Dir = wd
 

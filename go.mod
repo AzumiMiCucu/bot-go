@@ -9,6 +9,7 @@ require (
 	github.com/traefik/yaegi v0.16.1
 	go.mau.fi/libsignal v0.2.2
 	go.mau.fi/whatsmeow v0.0.0-20260609091626-4e622162b959
+	golang.org/x/image v0.43.0
 	google.golang.org/protobuf v1.36.11
 )
 
