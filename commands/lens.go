@@ -70,36 +70,42 @@ func ExecuteLens(ctx *ContextBot) error {
 	}
 
 	matches := res.Matches
-	const maxShow = 10
-	if len(matches) > maxShow {
-		matches = matches[:maxShow]
-	}
 
-	rb := src.NewAIRich().
-		SetTitle("🔎 TinEye — Sumber Gambar").
-		SetFooter(fmt.Sprintf("Total %d kecocokan • Balas NOMOR (1-%d) untuk foto + detail", res.NumMatches, len(matches)))
-
+	// Susun daftar TEKS semua kecocokan (tanpa batas 10).
+	var b strings.Builder
+	fmt.Fprintf(&b, "🔎 *TinEye — Sumber Gambar*\n\n")
 	for i, m := range matches {
 		domain := m.Domain
 		if domain == "" {
 			domain = "(tidak diketahui)"
 		}
-		page, image := lensMatchURLs(m)
-		label := domain
+		page, _ := lensMatchURLs(m)
+		line := fmt.Sprintf("\n*%d.* %s", i+1, domain)
 		if m.Width > 0 && m.Height > 0 {
-			label = fmt.Sprintf("%s • %dx%d", domain, m.Width, m.Height)
+			line += fmt.Sprintf(" • %dx%d", m.Width, m.Height)
 		}
-		rb.AddText(fmt.Sprintf("*%d.* %s", i+1, label))
-		rb.AddProduct(src.AIProduct{
-			Title:      domain,
-			Brand:      fmt.Sprintf("%dx%d", m.Width, m.Height),
-			Price:      fmt.Sprintf("#%d", i+1),
-			ProductURL: page,
-			ImageURL:   image,
-		})
+		b.WriteString(line + "\n")
+		if page != "" {
+			fmt.Fprintf(&b, "   🔗 %s\n", page)
+		}
+	}
+	fmt.Fprintf(&b, "\n_Total %d kecocokan • Balas NOMOR untuk foto + detail._", res.NumMatches)
+
+	// Preview gambar BESAR = gambar kecocokan TERATAS.
+	top := matches[0]
+	topPage, topImage := lensMatchURLs(top)
+	var thumb []byte
+	if topImage != "" {
+		if img, _, derr := src.DownloadBytes(topImage); derr == nil && len(img) > 0 {
+			thumb = img
+		}
+	}
+	topDomain := top.Domain
+	if topDomain == "" {
+		topDomain = "TinEye"
 	}
 
-	msgID, err := rb.SendToChatWithID(ctx)
+	msgID, err := src.SendTextWithThumbnailID(ctx, b.String(), topPage, "TinEye", topDomain, thumb)
 	if err != nil {
 		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal menampilkan daftar hasil.")

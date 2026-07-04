@@ -57,7 +57,7 @@ func ExecuteGLens(ctx *ContextBot) error {
 
 	go func() { _ = ctx.React("🔍") }()
 	results, err := src.GoogleLensSearch(data)
-	//ctx.Print(results)
+//	ctx.Print(results)
 	if err != nil {
 		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal Google Lens: " + err.Error())
@@ -67,33 +67,55 @@ func ExecuteGLens(ctx *ContextBot) error {
 		return ctx.Reply("🔍 Tidak ada hasil Google Lens untuk gambar ini.")
 	}
 
-	const maxShow = 10
-	if len(results) > maxShow {
-		results = results[:maxShow]
+	// Preview gambar BESAR: TIDAK dipaksa dari hasil teratas. Cari hasil PERTAMA
+	// yang thumbnail-nya benar-benar bisa didekode (base64 → fallback URL gstatic),
+	// lalu PINDAHKAN ke posisi #1 agar preview selalu tampil & nomor #1 = gambar itu.
+	var thumb []byte
+	for i, r := range results {
+		var img []byte
+		for _, t := range []string{r.Thumbnail, r.ThumbnailURL} {
+			if data, _, ok := src.GLensThumbBytes(t); ok && len(data) > 0 {
+				img = data
+				break
+			}
+		}
+		if img != nil {
+			thumb = img
+			if i != 0 {
+				// Naikkan hasil ke-i menjadi #1 (geser sisanya, jaga urutan relatif).
+				picked := results[i]
+				results = append(results[:i], results[i+1:]...)
+				results = append([]src.GLensResult{picked}, results...)
+			}
+			break
+		}
 	}
 
-	rb := src.NewAIRich().
-		SetTitle("🔎 Google Lens — Sumber Gambar").
-		SetFooter(fmt.Sprintf("Balas NOMOR (1-%d) untuk foto + detail lengkap", len(results)))
-
+	// Susun daftar TEKS semua hasil (tanpa batas 10).
+	var b strings.Builder
+	fmt.Fprintf(&b, "🔎 *Google Lens — Sumber Gambar*\n\n")
 	for i, r := range results {
 		title := r.Title
 		if title == "" {
 			title = "(tanpa judul)"
 		}
-		rb.AddText(fmt.Sprintf("*%d.* %s", i+1, title))
-		rb.AddProduct(src.AIProduct{
-			Title:      title,
-			Brand:      r.Domain,
-			Price:      fmt.Sprintf("#%d", i+1),
-			ProductURL: r.Source,
-			// Kartu AiRich hanya bisa MENAMPILKAN gambar via URL http (WA yang
-			// fetch); data URI base64 tak ter-render → pakai URL gstatic publik.
-			ImageURL: r.ThumbnailURL,
-		})
+		fmt.Fprintf(&b, "\n*%d.* %s\n", i+1, title)
+		if r.Domain != "" {
+			fmt.Fprintf(&b, "   🌐 %s\n", r.Domain)
+		}
+		if r.Source != "" {
+			fmt.Fprintf(&b, "   🔗 %s\n", r.Source)
+		}
+	}
+	fmt.Fprintf(&b, "\n_Total %d hasil • Balas NOMOR untuk foto + detail lengkap._", len(results))
+
+	top := results[0]
+	topTitle := top.Title
+	if topTitle == "" {
+		topTitle = "Google Lens"
 	}
 
-	msgID, err := rb.SendToChatWithID(ctx)
+	msgID, err := src.SendTextWithThumbnailID(ctx, b.String(), top.Source, "Google Lens", topTitle, thumb)
 	if err != nil {
 		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal menampilkan daftar hasil.")

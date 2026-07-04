@@ -303,6 +303,14 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		return
 	}
 
+	// Gate MAINTENANCE: fitur yang di-set maintenance oleh owner tak dijalankan
+	// untuk non-owner (owner tetap bisa memakainya untuk uji coba).
+	if !isOwner && commands.IsFeatureMaintenance(matchedCommand) {
+		_ = ReplyMsg(client, chatJID, evt, fmt.Sprintf(
+			"🛠️ Fitur *%s* sedang dalam *maintenance*.\nCoba lagi nanti ya 🙏", matchedCommand.Name))
+		return
+	}
+
 	// Cooldown
 	if !matchedCommand.IsCooledDown(user) {
 		_ = ReplyMsg(client, chatJID, evt, "⏱️ Cooldown aktif. Coba beberapa saat lagi.")
