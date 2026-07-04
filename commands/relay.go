@@ -81,10 +81,10 @@ func ExecuteCRM(ctx *ContextBot) error {
 		return ctx.Reply("⛔ Hanya owner yang bisa memakai crm.")
 	}
 	ci := extractContextInfo(ctx.Msg.Message)
-	if ci == nil || ci.GetQuotedMessage() == nil {
+	quoted, ok := resolveQuotedFull(ci)
+	if !ok {
 		return ctx.Reply("❌ Reply pesan yang ingin di-crm!")
 	}
-	quoted := ci.GetQuotedMessage()
 
 	// Serialize RAW & LENGKAP: seluruh field pesan (protojson, EmitUnpopulated agar
 	// field default pun ikut terlihat) → bisa menyalin pesan PERSIS apa pun tipenya.
@@ -131,10 +131,10 @@ func ExecuteRun(ctx *ContextBot) error {
 		return ctx.Reply("⛔ Hanya owner yang bisa memakai run.")
 	}
 	ci := extractContextInfo(ctx.Msg.Message)
-	if ci == nil || ci.GetQuotedMessage() == nil {
+	quoted, ok := resolveQuotedFull(ci)
+	if !ok {
 		return ctx.Reply("❌ Reply hasil crm (teks JSON atau file .json) dulu!")
 	}
-	quoted := ci.GetQuotedMessage()
 
 	// Sumber JSON: dari file dokumen yang di-reply, atau dari teks.
 	var raw []byte
@@ -175,8 +175,8 @@ func ExecuteRun(ctx *ContextBot) error {
 		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal relay: " + err.Error())
 	}
-	_ = ctx.React("✅")
-	return ctx.Reply("✅ Relay berhasil dikirim!")
+	// Sukses → cukup react, JANGAN kirim teks (biar tak mengotori chat).
+	return ctx.React("✅")
 }
 
 // ----------------------------------------------------------------- resend
@@ -186,12 +186,13 @@ func ExecuteResend(ctx *ContextBot) error {
 		return ctx.Reply("⛔ Hanya owner yang bisa memakai resend.")
 	}
 	ci := extractContextInfo(ctx.Msg.Message)
-	if ci == nil || ci.GetQuotedMessage() == nil {
+	quoted, ok := resolveQuotedFull(ci)
+	if !ok {
 		return ctx.Reply("❌ Reply pesan yang ingin dikirim ulang, lalu ketik `resend`.")
 	}
 
 	_ = ctx.React("⏳")
-	if _, err := ctx.Client.SendMessage(context.Background(), ctx.ChatJID, ci.GetQuotedMessage(), AndroidExtra()); err != nil {
+	if _, err := ctx.Client.SendMessage(context.Background(), ctx.ChatJID, quoted, AndroidExtra()); err != nil {
 		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal mengirim ulang: " + err.Error())
 	}

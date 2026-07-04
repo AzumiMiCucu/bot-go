@@ -96,7 +96,13 @@ func sendReply(client *whatsmeow.Client, chatJID types.JID, evt *events.Message,
 	return string(msgID), err
 }
 func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
-	if evt.Message == nil || evt.Info.IsFromMe {
+	if evt.Message == nil {
+		return
+	}
+	// Cache pesan MENTAH lebih awal — termasuk pesan bot sendiri (IsFromMe),
+	// sebab pesan list/tombol/interaktif bot justru yang paling sering di-crm.
+	commands.CacheRawMessage(evt.Info.ID, evt.Message)
+	if evt.Info.IsFromMe {
 		return
 	}
 	if evt.Info.Sender.String() == "status@broadcast" {

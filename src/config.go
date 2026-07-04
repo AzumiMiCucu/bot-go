@@ -31,6 +31,11 @@ type Configuration struct {
 	// kecuali chat owner. Tidak menghapus pesan untuk orang lain.
 	AutoClearChat    bool `json:"autoClearChat"`
 	AutoClearMinutes int  `json:"autoClearMinutes"` // default 30
+
+	// Cookie Google `NID` untuk fitur `glens` (Google Lens reverse image search).
+	// Tanpa NID valid, Google hanya mengembalikan shell JS tanpa hasil. Umur NID
+	// ~6 bulan; owner perbarui via command `setnid <cookie>` bila kedaluwarsa.
+	GoogleNID string `json:"googleNid"`
 }
 
 var AppConfig *Configuration

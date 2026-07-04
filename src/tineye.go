@@ -42,6 +42,7 @@ type TinEyeBacklink struct {
 	URL       string `json:"url"`      // halaman web sumber
 	Backlink  string `json:"backlink"` // tautan langsung gambar di sumber
 	CrawlDate string `json:"crawl_date"`
+	ImageName string `json:"image_name"`
 }
 
 // TinEyeMatch = satu kecocokan gambar.
@@ -60,20 +61,30 @@ type TinEyeMatch struct {
 // TinEyeResult = ringkasan hasil pencarian.
 type TinEyeResult struct {
 	NumMatches int           // total kecocokan dilaporkan TinEye
+	NumStr     string        // teks jumlah ("227 results") bila ada
+	TotalPages int           // total halaman hasil
 	QueryThumb string        // thumbnail gambar query (bila ada)
-	Matches    []TinEyeMatch // daftar kecocokan
+	Matches    []TinEyeMatch // daftar kecocokan (halaman ini)
 }
 
-// bentuk mentah respons TinEye (toleran terhadap variasi).
+// bentuk mentah respons TinEye. Respons ASLI menaruh `matches` & `num_matches`
+// di TOP-LEVEL (bukan di dalam `results`). Tetap dukung varian lama `results`
+// {matches:[...]} sebagai fallback agar tahan perubahan API.
 type tineyeRaw struct {
-	QueryHash string `json:"query_hash"`
-	Stats     struct {
+	QueryHash    string          `json:"query_hash"`
+	NumMatches   int             `json:"num_matches"`
+	StrNumMatch  string          `json:"str_num_matches"`
+	TotalPages   int             `json:"total_pages"`
+	Matches      []TinEyeMatch   `json:"matches"`
+	Results      json.RawMessage `json:"results"`
+	Query        struct {
+		Key string `json:"key"`
+	} `json:"query"`
+	Stats struct {
 		QueryHash    string `json:"query_hash"`
 		NumMatches   int    `json:"num_matches"`
 		TotalMatches int    `json:"total_matches"`
 	} `json:"stats"`
-	NumMatches int             `json:"num_matches"`
-	Results    json.RawMessage `json:"results"`
 }
 
 // TinEyeSearch mengirim gambar ke TinEye dan mengembalikan hasil yang dinormalkan.
@@ -133,9 +144,10 @@ func TinEyeSearch(imageData []byte, fileName string) (*TinEyeResult, error) {
 		return nil, fmt.Errorf("TinEye: gagal parsing respons")
 	}
 
-	// `results` bisa OBJECT {matches:[...]} atau langsung ARRAY [...].
-	var matches []TinEyeMatch
-	if len(raw.Results) > 0 {
+	// `matches` ADA di top-level pada respons asli. Fallback: `results` bisa
+	// OBJECT {matches:[...]} atau langsung ARRAY [...] pada varian lama.
+	matches := raw.Matches
+	if len(matches) == 0 && len(raw.Results) > 0 {
 		var asObj struct {
 			Matches []TinEyeMatch `json:"matches"`
 		}
@@ -146,7 +158,11 @@ func TinEyeSearch(imageData []byte, fileName string) (*TinEyeResult, error) {
 		}
 	}
 
-	out := &TinEyeResult{Matches: matches}
+	out := &TinEyeResult{
+		Matches:    matches,
+		NumStr:     raw.StrNumMatch,
+		TotalPages: raw.TotalPages,
+	}
 
 	// Jumlah kecocokan: ambil dari field yang tersedia, fallback panjang slice.
 	switch {
@@ -164,6 +180,9 @@ func TinEyeSearch(imageData []byte, fileName string) (*TinEyeResult, error) {
 	qh := raw.QueryHash
 	if qh == "" {
 		qh = raw.Stats.QueryHash
+	}
+	if qh == "" {
+		qh = raw.Query.Key
 	}
 	if qh != "" {
 		out.QueryThumb = fmt.Sprintf("https://tineye.com/api/v1/query/%s?size=160", qh)
