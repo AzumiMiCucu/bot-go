@@ -164,6 +164,9 @@ func RouteReply(ctx *ContextBot) bool {
 	case "glens":
 		// Hanya konsumsi bila reply benar-benar memilih nomor hasil.
 		return handleGLensReply(ctx, rc)
+	case "lens":
+		// Hanya konsumsi bila reply benar-benar memilih nomor hasil.
+		return handleLensReply(ctx, rc)
 	default:
 		return false
 	}

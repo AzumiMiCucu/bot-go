@@ -2,12 +2,14 @@ package src
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"regexp"
 	"strings"
@@ -47,10 +49,11 @@ var glensHTTP = &http.Client{
 
 // GLensResult = satu hasil Google Lens.
 type GLensResult struct {
-	Title     string // judul/teks tautan sumber
-	Source    string // URL halaman tempat gambar muncul
-	Domain    string // domain sumber (tanpa www.)
-	Thumbnail string // URL thumbnail gambar (gstatic/tbn) bila ada
+	Title        string // judul/teks tautan sumber
+	Source       string // URL halaman tempat gambar muncul
+	Domain       string // domain sumber (tanpa www.)
+	Thumbnail    string // data URI base64 thumbnail (di-SSR Google) bila ada
+	ThumbnailURL string // URL http publik gstatic/encrypted-tbn (bisa di-fetch WA)
 }
 
 // glensCookie mengembalikan cookie yang dipakai untuk request (cookie penuh
@@ -62,9 +65,9 @@ func glensCookie() string {
 	if c := strings.TrimSpace(AppConfig.GoogleCookie); c != "" {
 		return c
 	}
-	if nid := strings.TrimSpace(AppConfig.GoogleNID); nid != "" {
+	/*if nid := strings.TrimSpace(AppConfig.GoogleNID); nid != "" {
 		return "NID=" + strings.TrimPrefix(nid, "NID=")
-	}
+	}*/
 	return ""
 }
 
@@ -108,7 +111,15 @@ func GoogleLensSearch(imageData []byte) ([]GLensResult, error) {
 func glensUpload(imageData []byte, cookie string) (string, error) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
-	fw, err := w.CreateFormFile("encoded_image", "image.jpg")
+	// PENTING: part `encoded_image` HARUS ber-Content-Type image/... —
+	// bukan application/octet-stream default `CreateFormFile`. Diverifikasi live
+	// 2026-07-04: dengan octet-stream Google balas Location "kurus" (lns_vfs=d)
+	// yang cuma memuat shell JS (0 hasil); dengan image/jpeg Google balas Location
+	// "kaya" (gsessionid, lns_mode=un) yang ter-SSR penuh berisi data hasil.
+	partHdr := make(textproto.MIMEHeader)
+	partHdr.Set("Content-Disposition", `form-data; name="encoded_image"; filename="image.jpg"`)
+	partHdr.Set("Content-Type", "image/jpeg")
+	fw, err := w.CreatePart(partHdr)
 	if err != nil {
 		return "", err
 	}
@@ -218,17 +229,60 @@ func glensParseAF(doc string) []GLensResult {
 	return out
 }
 
-// glensWalk turun rekursif; berhenti di subtree yang berisi TEPAT SATU URL
-// halaman dan menjadikannya satu hasil (mengambil judul + thumbnail dari
-// seluruh isi subtree tsb).
+// glensWalk mereplikasi persis algoritma parser Node yang TERBUKTI jalan:
+// pada TIAP array, lihat HANYA string anak-LANGSUNG (bukan rekursif). Bila ada
+// URL eksternal di antaranya → jadikan 1 kandidat hasil (source = URL non-gambar
+// pertama, judul & thumbnail dari string anak-langsung yang sama). Lalu tetap
+// turun ke semua anak agar hasil bersarang lain ikut terjaring.
 func glensWalk(node interface{}, out *[]GLensResult) {
 	switch v := node.(type) {
 	case []interface{}:
-		pages := glensCollectPages(v)
-		if len(pages) == 1 {
-			*out = append(*out, glensBuildMatch(v, pages[0]))
-			return
+		// Kumpulkan HANYA string anak-langsung (meniru node.filter(typeof==string)).
+		var strs []string
+		for _, c := range v {
+			if s, ok := c.(string); ok {
+				strs = append(strs, s)
+			}
 		}
+		// URL eksternal di antara string anak-langsung.
+		var urls []string
+		for _, s := range strs {
+			if glensIsExternalURL(s) {
+				urls = append(urls, s)
+			}
+		}
+		if len(urls) > 0 {
+			// source: URL non-gambar pertama, fallback URL pertama.
+			source := ""
+			for _, u := range urls {
+				if !glensLooksImage(u) {
+					source = u
+					break
+				}
+			}
+			if source == "" {
+				source = urls[0]
+			}
+			thumb := ""
+			title := ""
+			for _, s := range strs {
+				if thumb == "" && glensIsThumb(s) {
+					thumb = s
+				}
+				if title == "" && !glensIsURL(s) && len([]rune(s)) >= 4 && len(s) <= 200 &&
+					strings.ContainsAny(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") &&
+					!glensIsJunk(s) {
+					title = strings.TrimSpace(s)
+				}
+			}
+			*out = append(*out, GLensResult{
+				Title:     title,
+				Source:    source,
+				Domain:    glensDomainOf(source),
+				Thumbnail: thumb,
+			})
+		}
+		// Tetap telusuri semua anak (meniru rekursi Node setelah push).
 		for _, c := range v {
 			glensWalk(c, out)
 		}
@@ -239,70 +293,6 @@ func glensWalk(node interface{}, out *[]GLensResult) {
 	}
 }
 
-// glensCollectPages mengumpulkan semua URL halaman EKSTERNAL di dalam subtree.
-func glensCollectPages(node interface{}) []string {
-	var urls []string
-	var rec func(n interface{})
-	rec = func(n interface{}) {
-		switch v := n.(type) {
-		case string:
-			if glensIsExternalURL(v) && !glensLooksImage(v) {
-				urls = append(urls, v)
-			}
-		case []interface{}:
-			for _, c := range v {
-				rec(c)
-			}
-		case map[string]interface{}:
-			for _, c := range v {
-				rec(c)
-			}
-		}
-	}
-	rec(node)
-	return urls
-}
-
-// glensBuildMatch membangun satu hasil dari subtree + URL sumber yang diketahui.
-func glensBuildMatch(node interface{}, source string) GLensResult {
-	var strs []string
-	var rec func(n interface{})
-	rec = func(n interface{}) {
-		switch v := n.(type) {
-		case string:
-			strs = append(strs, v)
-		case []interface{}:
-			for _, c := range v {
-				rec(c)
-			}
-		case map[string]interface{}:
-			for _, c := range v {
-				rec(c)
-			}
-		}
-	}
-	rec(node)
-
-	thumb := ""
-	title := ""
-	for _, s := range strs {
-		if thumb == "" && glensIsThumb(s) {
-			thumb = s
-		}
-		if title == "" && !glensIsURL(s) && len([]rune(s)) >= 4 && len(s) <= 200 &&
-			strings.ContainsAny(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") &&
-			!glensIsJunk(s) {
-			title = strings.TrimSpace(s)
-		}
-	}
-	return GLensResult{
-		Title:     title,
-		Source:    source,
-		Domain:    glensDomainOf(source),
-		Thumbnail: thumb,
-	}
-}
-
 // =================================================================
 // PARSER B (fallback): anchor `<a href=".." ping="/url?...">`.
 // =================================================================
@@ -310,7 +300,28 @@ func glensBuildMatch(node interface{}, source string) GLensResult {
 var glensAnchorRe = regexp.MustCompile(`(?is)<a[^>]*\shref="(https?://[^"]+)"[^>]*\sping="/url\?[^"]*"[^>]*>`)
 var glensHeadingRe = regexp.MustCompile(`(?is)role="heading"[^>]*>\s*(?:<[^>]+>\s*)*([^<]{1,180})`)
 
+// Thumbnail Google Lens dikirim sebagai base64 yang di-defer: tiap kartu punya
+// `<img id="dimg_XXX_N" data-deferred="1">` (placeholder), lalu script terpisah
+// `var s='data:image/jpeg;base64,....';var ii=['dimg_XXX_N'];_setImagesSrc(...)`
+// memetakan gambar asli ke id itu. Kita bangun peta id→dataURI lalu pasangkan.
+var glensSetImgRe = regexp.MustCompile(`(?s)var s='(data:image[^']*)';var ii=\[([^\]]*)\];`)
+var glensImgIDRe = regexp.MustCompile(`id="(dimg_[^"]+)"`)
+var glensIDListRe = regexp.MustCompile(`'([^']+)'`)
+
+// glensThumbMap membangun peta id `dimg_...` → data URI gambar (JPEG/PNG/WebP).
+func glensThumbMap(doc string) map[string]string {
+	m := make(map[string]string)
+	for _, mm := range glensSetImgRe.FindAllStringSubmatch(doc, -1) {
+		data := mm[1]
+		for _, id := range glensIDListRe.FindAllStringSubmatch(mm[2], -1) {
+			m[id[1]] = data
+		}
+	}
+	return m
+}
+
 func glensParseAnchors(doc string) []GLensResult {
+	thumbs := glensThumbMap(doc)
 	locs := glensAnchorRe.FindAllStringSubmatchIndex(doc, -1)
 	out := make([]GLensResult, 0, len(locs))
 	for i, m := range locs {
@@ -318,21 +329,101 @@ func glensParseAnchors(doc string) []GLensResult {
 		if !glensIsExternalURL(link) {
 			continue
 		}
+		// Judul: cari role="heading" pada blok SETELAH anchor (s/d anchor berikut).
 		end := len(doc)
 		if i+1 < len(locs) {
 			end = locs[i+1][0]
 		}
-		if end-m[1] > 2000 {
-			end = m[1] + 2000
+		fwd := end
+		if fwd-m[1] > 2000 {
+			fwd = m[1] + 2000
 		}
-		block := doc[m[1]:end]
 		title := ""
-		if tm := glensHeadingRe.FindStringSubmatch(block); tm != nil {
+		if tm := glensHeadingRe.FindStringSubmatch(doc[m[1]:fwd]); tm != nil {
 			title = strings.TrimSpace(html.UnescapeString(tm[1]))
 		}
-		out = append(out, GLensResult{Title: title, Source: link, Domain: glensDomainOf(link)})
+		// Thumbnail: gambar kartu ada SEBELUM anchor. Telusuri jendela mundur
+		// (maks 2600 char) untuk id dimg_, lalu ambil data URI JPEG TERBESAR
+		// (favicon kecil / PNG placeholder terabaikan otomatis).
+		lo := m[0] - 2600
+		if lo < 0 {
+			lo = 0
+		}
+		// Ambil data URI TERBESAR di jendela; syarat >2 KB agar favicon/placeholder
+		// mungil (mis. PNG 470 byte) terbuang & hanya thumbnail asli yang terpilih.
+		// Utamakan jendela MUNDUR (gambar kartu umumnya sebelum anchor); bila tak
+		// ketemu, coba jendela MAJU (sebagian kartu menaruh gambar setelah anchor).
+		hi := fwd
+		if hi-m[1] > 2600 {
+			hi = m[1] + 2600
+		}
+		thumb := glensBiggestThumb(doc[lo:m[0]], thumbs)
+		if thumb == "" {
+			thumb = glensBiggestThumb(doc[m[1]:hi], thumbs)
+		}
+		// URL thumbnail publik (encrypted-tbn.gstatic.com) — bisa di-fetch WA
+		// langsung sehingga TAMPIL di kartu AiRich tanpa perlu upload/host.
+		thumbURL := glensFirstTbnURL(doc[lo:m[0]])
+		if thumbURL == "" {
+			thumbURL = glensFirstTbnURL(doc[m[1]:hi])
+		}
+		out = append(out, GLensResult{Title: title, Source: link, Domain: glensDomainOf(link), Thumbnail: thumb, ThumbnailURL: thumbURL})
 	}
 	return out
+}
+
+// glensBiggestThumb mengembalikan data URI TERBESAR (>2 KB) dari id dimg_ yang
+// ditemukan pada potongan `seg`, atau "" bila tak ada.
+func glensBiggestThumb(seg string, thumbs map[string]string) string {
+	best := ""
+	for _, idm := range glensImgIDRe.FindAllStringSubmatch(seg, -1) {
+		if d, ok := thumbs[idm[1]]; ok && len(d) > 2000 && len(d) > len(best) {
+			best = d
+		}
+	}
+	return best
+}
+
+// glensTbnURLRe menangkap URL thumbnail publik gstatic (tanpa escape HTML).
+var glensTbnURLRe = regexp.MustCompile(`https://encrypted-tbn[0-9]\.gstatic\.com/images\?q=tbn:[^"'\\ ]+`)
+
+// glensFirstTbnURL mengembalikan URL encrypted-tbn pertama pada potongan `seg`.
+func glensFirstTbnURL(seg string) string {
+	return glensTbnURLRe.FindString(seg)
+}
+
+// GLensThumbBytes mendekode thumbnail. Bila `thumb` berupa data URI
+// (`data:image/...;base64,...`) → kembalikan byte + mime hasil dekode. Bila URL
+// http(s) → unduh. ok=false bila kosong/gagal.
+func GLensThumbBytes(thumb string) ([]byte, string, bool) {
+	thumb = strings.TrimSpace(thumb)
+	if thumb == "" {
+		return nil, "", false
+	}
+	if strings.HasPrefix(thumb, "data:") {
+		semi := strings.IndexByte(thumb, ',')
+		if semi < 0 {
+			return nil, "", false
+		}
+		meta, payload := thumb[5:semi], thumb[semi+1:]
+		mime := "image/jpeg"
+		if p := strings.IndexByte(meta, ';'); p > 0 {
+			mime = meta[:p]
+		}
+		data, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil || len(data) == 0 {
+			return nil, "", false
+		}
+		return data, mime, true
+	}
+	data, ctype, err := DownloadBytes(thumb)
+	if err != nil || len(data) == 0 {
+		return nil, "", false
+	}
+	if ctype == "" {
+		ctype = "image/jpeg"
+	}
+	return data, ctype, true
 }
 
 // =================================================================

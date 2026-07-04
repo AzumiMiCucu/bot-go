@@ -57,6 +57,7 @@ func ExecuteGLens(ctx *ContextBot) error {
 
 	go func() { _ = ctx.React("🔍") }()
 	results, err := src.GoogleLensSearch(data)
+	//ctx.Print(results)
 	if err != nil {
 		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal Google Lens: " + err.Error())
@@ -86,7 +87,9 @@ func ExecuteGLens(ctx *ContextBot) error {
 			Brand:      r.Domain,
 			Price:      fmt.Sprintf("#%d", i+1),
 			ProductURL: r.Source,
-			ImageURL:   r.Thumbnail,
+			// Kartu AiRich hanya bisa MENAMPILKAN gambar via URL http (WA yang
+			// fetch); data URI base64 tak ter-render → pakai URL gstatic publik.
+			ImageURL: r.ThumbnailURL,
 		})
 	}
 
@@ -125,12 +128,11 @@ func handleGLensReply(ctx *ContextBot, rc *ReplyContext) bool {
 
 	go func() { _ = ctx.React("⏳") }()
 
-	// Coba kirim foto thumbnail + detail sebagai caption.
-	if r.Thumbnail != "" {
-		if img, ctype, derr := src.DownloadBytes(r.Thumbnail); derr == nil && len(img) > 0 {
-			if ctype == "" {
-				ctype = "image/jpeg"
-			}
+	// Coba kirim foto thumbnail + detail sebagai caption. Utamakan data URI base64
+	// (kualitas penuh); fallback ke URL gstatic publik. GLensThumbBytes menangani
+	// keduanya (dekode base64 / unduh http).
+	for _, t := range []string{r.Thumbnail, r.ThumbnailURL} {
+		if img, ctype, ok := src.GLensThumbBytes(t); ok {
 			if serr := src.SendImageBytes(ctx, img, ctype, caption); serr == nil {
 				_ = ctx.React("✅")
 				return true
