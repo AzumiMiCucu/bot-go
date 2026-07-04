@@ -161,6 +161,9 @@ func RouteReply(ctx *ContextBot) bool {
 	case "playcall":
 		// Hanya konsumsi bila reply benar-benar memilih nomor lagu.
 		return handlePlayCallReply(ctx, rc)
+	case "glens":
+		// Hanya konsumsi bila reply benar-benar memilih nomor hasil.
+		return handleGLensReply(ctx, rc)
 	default:
 		return false
 	}

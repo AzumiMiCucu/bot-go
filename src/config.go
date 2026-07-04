@@ -32,10 +32,16 @@ type Configuration struct {
 	AutoClearChat    bool `json:"autoClearChat"`
 	AutoClearMinutes int  `json:"autoClearMinutes"` // default 30
 
-	// Cookie Google `NID` untuk fitur `glens` (Google Lens reverse image search).
-	// Tanpa NID valid, Google hanya mengembalikan shell JS tanpa hasil. Umur NID
-	// ~6 bulan; owner perbarui via command `setnid <cookie>` bila kedaluwarsa.
-	GoogleNID string `json:"googleNid"`
+	// Cookie Google untuk fitur `glens` (Google Lens reverse image search).
+	// Tanpa cookie sesi yang valid, Google hanya mengembalikan shell JS tanpa
+	// hasil. Owner set/perbarui via command `setnid <cookie penuh>`.
+	//
+	// GoogleCookie = string cookie PENUH dari header Cookie browser yang login
+	// (mis. "AEC=..; NID=..; __Secure-..=.."). Ini yang membuat data hasil
+	// LENGKAP (thumbnail dsb). GoogleNID lama tetap dibaca sebagai fallback bila
+	// GoogleCookie kosong (kompatibilitas config lama).
+	GoogleCookie string `json:"googleCookie"`
+	GoogleNID    string `json:"googleNid"`
 }
 
 var AppConfig *Configuration

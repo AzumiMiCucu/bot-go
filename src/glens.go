@@ -2,11 +2,13 @@ package src
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -18,20 +20,21 @@ import (
 // Alur (diverifikasi live 2026-07-04):
 //   1. POST multipart gambar (field `encoded_image`) ke
 //      https://lens.google.com/v3/upload?ep=gsbubb&st=<ms>&... → 303 redirect
-//      ke www.google.com/search?vsrid=... (session Lens ada di URL).
-//   2. GET URL redirect itu DENGAN cookie Google `NID` yang valid → HTML 1MB
-//      berisi hasil ter-render sebagai DOM (BUKAN AF_initDataCallback lagi —
-//      pendekatan skrip lama sudah usang & dihapus Google).
-//   3. Parse tiap hasil dari anchor `<a href=".." ping="/url?..">` + heading
-//      (title) + label sumber (domain).
+//      ke www.google.com/search?...&udm=26 (session Lens ada di URL).
+//   2. GET URL redirect itu DENGAN cookie Google PENUH (login) → HTML ter-SSR
+//      yang menaruh data hasil di blok `AF_initDataCallback([...])`.
+//   3. Parse blok itu sebagai JSON, deep-walk STRUKTUR-AGNOSTIK: turun sampai
+//      menemukan subtree berisi TEPAT SATU URL halaman (= satu hasil), lalu
+//      ambil judul + thumbnail dari seluruh isi subtree tersebut.
 //
-// PENTING: tanpa cookie NID valid, Google hanya balas shell JS (0 hasil).
-// NID disimpan di config (AppConfig.GoogleNID), diperbarui owner via `setnid`.
+// PENTING: butuh cookie Google PENUH & valid (owner set via `setnid`). Cookie
+// NID saja sering tak cukup → hasil kosong / data tak lengkap. Tanpa SSR, Google
+// balas shell "enablejs".
 
 const glensUploadBase = "https://lens.google.com/v3/upload"
 
-// UA browser desktop-mobile yang ditiru dari capture request asli (com.xbrowser.play).
-const glensUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+// UA browser desktop yang ditiru dari capture request asli.
+const glensUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
 
 // Klien khusus glens: TIDAK auto-follow redirect (kita butuh Location upload).
 var glensHTTP = &http.Client{
@@ -44,36 +47,42 @@ var glensHTTP = &http.Client{
 
 // GLensResult = satu hasil Google Lens.
 type GLensResult struct {
-	Title  string
-	Domain string
-	Link   string
+	Title     string // judul/teks tautan sumber
+	Source    string // URL halaman tempat gambar muncul
+	Domain    string // domain sumber (tanpa www.)
+	Thumbnail string // URL thumbnail gambar (gstatic/tbn) bila ada
 }
 
-var (
-	glensAnchorRe = regexp.MustCompile(`(?is)<a[^>]*\shref="(https?://[^"]+)"[^>]*\sping="/url\?[^"]*"[^>]*>`)
-	glensTitleRe  = regexp.MustCompile(`(?is)role="heading"[^>]*>\s*(?:<[^>]+>\s*)*([^<]{1,180})`)
-	glensDomainRe = regexp.MustCompile(`(?is)<div class="R8BTeb[^"]*">([^<]{1,80})</div>`)
-)
+// glensCookie mengembalikan cookie yang dipakai untuk request (cookie penuh
+// diprioritaskan; fallback ke "NID=..." lama demi kompatibilitas config lama).
+func glensCookie() string {
+	if AppConfig == nil {
+		return ""
+	}
+	if c := strings.TrimSpace(AppConfig.GoogleCookie); c != "" {
+		return c
+	}
+	if nid := strings.TrimSpace(AppConfig.GoogleNID); nid != "" {
+		return "NID=" + strings.TrimPrefix(nid, "NID=")
+	}
+	return ""
+}
 
 // GoogleLensSearch mengirim gambar ke Google Lens dan mengembalikan daftar hasil.
-// Membutuhkan AppConfig.GoogleNID (cookie NID Google) yang valid.
+// Membutuhkan cookie Google penuh & valid (AppConfig.GoogleCookie).
 func GoogleLensSearch(imageData []byte) ([]GLensResult, error) {
 	if len(imageData) == 0 {
 		return nil, fmt.Errorf("data gambar kosong")
 	}
-	nid := ""
-	if AppConfig != nil {
-		nid = strings.TrimSpace(AppConfig.GoogleNID)
-	}
-	if nid == "" {
-		return nil, fmt.Errorf("cookie Google NID belum diset — owner set dulu via `setnid <cookie>`")
+	cookie := glensCookie()
+	if cookie == "" {
+		return nil, fmt.Errorf("cookie Google belum diset — owner set dulu via `setnid <cookie penuh>`")
 	}
 	// Stiker WA = WebP → konversi ke JPEG di memori.
 	imageData, err := ToJPEGForAPI(imageData)
 	if err != nil {
 		return nil, err
 	}
-	cookie := "NID=" + nid
 
 	// 1) Upload → ambil Location (URL hasil dengan session Lens).
 	searchURL, err := glensUpload(imageData, cookie)
@@ -81,15 +90,18 @@ func GoogleLensSearch(imageData []byte) ([]GLensResult, error) {
 		return nil, err
 	}
 
-	// 2) Fetch halaman hasil dengan cookie NID.
+	// 2) Fetch halaman hasil dengan cookie penuh.
 	htmlDoc, err := glensFetchResults(searchURL, cookie)
 	if err != nil {
 		return nil, err
 	}
 
-	// 3) Parse.
-	results := glensParse(htmlDoc)
-	return results, nil
+	// 3) Parse: utamakan deep-walk AF_initDataCallback, fallback anchor.
+	results := glensParseAF(htmlDoc)
+	if len(results) == 0 {
+		results = glensParseAnchors(htmlDoc)
+	}
+	return glensDedupe(results), nil
 }
 
 // glensUpload POST gambar, balikan URL redirect (Location) berisi session hasil.
@@ -108,8 +120,8 @@ func glensUpload(imageData []byte, cookie string) (string, error) {
 	}
 
 	ts := time.Now().UnixMilli()
-	url := fmt.Sprintf("%s?ep=gsbubb&st=%d&authuser=0&hl=id&vpw=980&vph=1873", glensUploadBase, ts)
-	req, err := http.NewRequest(http.MethodPost, url, &buf)
+	u := fmt.Sprintf("%s?ep=gsbubb&st=%d&authuser=0&hl=id&vpw=980&vph=1873", glensUploadBase, ts)
+	req, err := http.NewRequest(http.MethodPost, u, &buf)
 	if err != nil {
 		return "", err
 	}
@@ -120,9 +132,6 @@ func glensUpload(imageData []byte, cookie string) (string, error) {
 	req.Header.Set("Referer", "https://www.google.com/")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7")
-	req.Header.Set("x-requested-with", "com.xbrowser.play")
-	req.Header.Set("sec-ch-ua-form-factors", `"Mobile"`)
-	req.Header.Set("Upgrade-Insecure-Requests", "1")
 
 	resp, err := glensHTTP.Do(req)
 	if err != nil {
@@ -133,7 +142,7 @@ func glensUpload(imageData []byte, cookie string) (string, error) {
 
 	loc := resp.Header.Get("Location")
 	if loc == "" {
-		return "", fmt.Errorf("Lens: tidak mendapat URL hasil (status %d) — cookie NID mungkin invalid", resp.StatusCode)
+		return "", fmt.Errorf("Lens: tidak mendapat URL hasil (status %d) — cookie mungkin invalid", resp.StatusCode)
 	}
 	return loc, nil
 }
@@ -152,8 +161,9 @@ func glensFetchResults(searchURL, cookie string) (string, error) {
 	req.Header.Set("sec-fetch-site", "same-origin")
 	req.Header.Set("sec-fetch-mode", "navigate")
 	req.Header.Set("sec-fetch-dest", "document")
+	req.Header.Set("Upgrade-Insecure-Requests", "1")
 
-	// Follow redirect di sini boleh (pakai klien default global lewat transport).
+	// Follow redirect di sini boleh.
 	resp, err := (&http.Client{Timeout: 60 * time.Second, Transport: sharedTransport}).Do(req)
 	if err != nil {
 		return "", fmt.Errorf("Lens fetch hasil gagal: %w", err)
@@ -164,61 +174,263 @@ func glensFetchResults(searchURL, cookie string) (string, error) {
 		return "", fmt.Errorf("Lens: gagal baca hasil: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("Lens status %d — cookie NID mungkin kedaluwarsa", resp.StatusCode)
+		return "", fmt.Errorf("Lens status %d — cookie mungkin kedaluwarsa", resp.StatusCode)
 	}
 	return string(body), nil
 }
 
-// glensParse mengekstrak hasil dari HTML halaman Lens.
-func glensParse(doc string) []GLensResult {
-	locs := glensAnchorRe.FindAllStringSubmatchIndex(doc, -1)
-	out := make([]GLensResult, 0, len(locs))
-	seen := make(map[string]bool)
+// =================================================================
+// PARSER A (utama): AF_initDataCallback → array JSON → deep-walk.
+// =================================================================
 
-	for i, m := range locs {
-		// m[2],m[3] = grup 1 (href). Blok = dari akhir anchor s/d anchor berikutnya.
-		link := html.UnescapeString(doc[m[2]:m[3]])
-		if glensSkipLink(link) || seen[link] {
+// glensParseAF mengekstrak hasil dari blok AF_initDataCallback([...]).
+func glensParseAF(doc string) []GLensResult {
+	var out []GLensResult
+	const marker = "AF_initDataCallback("
+	i := 0
+	for {
+		p := strings.Index(doc[i:], marker)
+		if p < 0 {
+			break
+		}
+		start := i + p + len(marker)
+		i = start
+		// Cari `data:` lalu array `[` seimbang sesudahnya.
+		dp := strings.Index(doc[start:], "data:")
+		if dp < 0 {
 			continue
 		}
-		start := m[1]
-		end := len(doc)
-		if i+1 < len(locs) {
-			end = locs[i+1][0]
-		}
-		if end-start > 2000 {
-			end = start + 2000 // batasi jendela pencarian per hasil
-		}
-		block := doc[start:end]
-
-		title := ""
-		if tm := glensTitleRe.FindStringSubmatch(block); tm != nil {
-			title = strings.TrimSpace(html.UnescapeString(tm[1]))
-		}
-		domain := ""
-		if dm := glensDomainRe.FindStringSubmatch(block); dm != nil {
-			domain = strings.TrimSpace(html.UnescapeString(dm[1]))
-		}
-		if title == "" && domain == "" {
+		ap := strings.IndexByte(doc[start+dp:], '[')
+		if ap < 0 {
 			continue
 		}
-		seen[link] = true
-		out = append(out, GLensResult{Title: title, Domain: domain, Link: link})
+		arrStart := start + dp + ap
+		arrStr := glensBalanced(doc, arrStart)
+		if arrStr == "" {
+			continue
+		}
+		var node interface{}
+		if err := json.Unmarshal([]byte(arrStr), &node); err != nil {
+			continue // bagian tak valid JSON dilewati
+		}
+		glensWalk(node, &out)
 	}
 	return out
 }
 
-// glensSkipLink membuang tautan bantuan/internal Google (bukan hasil sungguhan).
-func glensSkipLink(link string) bool {
-	low := strings.ToLower(link)
-	switch {
-	case strings.Contains(low, "support.google.com"),
-		strings.Contains(low, "accounts.google.com"),
-		strings.Contains(low, "policies.google.com"),
-		strings.Contains(low, "google.com/search"),
-		strings.Contains(low, "/preferences"),
-		strings.Contains(low, "/setprefs"):
-		return true
+// glensWalk turun rekursif; berhenti di subtree yang berisi TEPAT SATU URL
+// halaman dan menjadikannya satu hasil (mengambil judul + thumbnail dari
+// seluruh isi subtree tsb).
+func glensWalk(node interface{}, out *[]GLensResult) {
+	switch v := node.(type) {
+	case []interface{}:
+		pages := glensCollectPages(v)
+		if len(pages) == 1 {
+			*out = append(*out, glensBuildMatch(v, pages[0]))
+			return
+		}
+		for _, c := range v {
+			glensWalk(c, out)
+		}
+	case map[string]interface{}:
+		for _, c := range v {
+			glensWalk(c, out)
+		}
 	}
-	return false
+}
+
+// glensCollectPages mengumpulkan semua URL halaman EKSTERNAL di dalam subtree.
+func glensCollectPages(node interface{}) []string {
+	var urls []string
+	var rec func(n interface{})
+	rec = func(n interface{}) {
+		switch v := n.(type) {
+		case string:
+			if glensIsExternalURL(v) && !glensLooksImage(v) {
+				urls = append(urls, v)
+			}
+		case []interface{}:
+			for _, c := range v {
+				rec(c)
+			}
+		case map[string]interface{}:
+			for _, c := range v {
+				rec(c)
+			}
+		}
+	}
+	rec(node)
+	return urls
+}
+
+// glensBuildMatch membangun satu hasil dari subtree + URL sumber yang diketahui.
+func glensBuildMatch(node interface{}, source string) GLensResult {
+	var strs []string
+	var rec func(n interface{})
+	rec = func(n interface{}) {
+		switch v := n.(type) {
+		case string:
+			strs = append(strs, v)
+		case []interface{}:
+			for _, c := range v {
+				rec(c)
+			}
+		case map[string]interface{}:
+			for _, c := range v {
+				rec(c)
+			}
+		}
+	}
+	rec(node)
+
+	thumb := ""
+	title := ""
+	for _, s := range strs {
+		if thumb == "" && glensIsThumb(s) {
+			thumb = s
+		}
+		if title == "" && !glensIsURL(s) && len([]rune(s)) >= 4 && len(s) <= 200 &&
+			strings.ContainsAny(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") &&
+			!glensIsJunk(s) {
+			title = strings.TrimSpace(s)
+		}
+	}
+	return GLensResult{
+		Title:     title,
+		Source:    source,
+		Domain:    glensDomainOf(source),
+		Thumbnail: thumb,
+	}
+}
+
+// =================================================================
+// PARSER B (fallback): anchor `<a href=".." ping="/url?...">`.
+// =================================================================
+
+var glensAnchorRe = regexp.MustCompile(`(?is)<a[^>]*\shref="(https?://[^"]+)"[^>]*\sping="/url\?[^"]*"[^>]*>`)
+var glensHeadingRe = regexp.MustCompile(`(?is)role="heading"[^>]*>\s*(?:<[^>]+>\s*)*([^<]{1,180})`)
+
+func glensParseAnchors(doc string) []GLensResult {
+	locs := glensAnchorRe.FindAllStringSubmatchIndex(doc, -1)
+	out := make([]GLensResult, 0, len(locs))
+	for i, m := range locs {
+		link := html.UnescapeString(doc[m[2]:m[3]])
+		if !glensIsExternalURL(link) {
+			continue
+		}
+		end := len(doc)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		if end-m[1] > 2000 {
+			end = m[1] + 2000
+		}
+		block := doc[m[1]:end]
+		title := ""
+		if tm := glensHeadingRe.FindStringSubmatch(block); tm != nil {
+			title = strings.TrimSpace(html.UnescapeString(tm[1]))
+		}
+		out = append(out, GLensResult{Title: title, Source: link, Domain: glensDomainOf(link)})
+	}
+	return out
+}
+
+// =================================================================
+// Util.
+// =================================================================
+
+// glensBalanced mengembalikan substring `[...]` seimbang mulai dari indeks '['.
+func glensBalanced(s string, start int) string {
+	depth := 0
+	inStr := false
+	esc := false
+	for k := start; k < len(s); k++ {
+		c := s[k]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return s[start : k+1]
+			}
+		}
+	}
+	return ""
+}
+
+func glensIsURL(s string) bool {
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+}
+
+var glensInternalRe = regexp.MustCompile(`(?i)^https?://(?:[a-z0-9-]+\.)*(google\.com|gstatic\.com|googleusercontent\.com|googleapis\.com|youtube\.com|ggpht\.com|schema\.org)(/|$)`)
+
+func glensIsExternalURL(s string) bool {
+	return glensIsURL(s) && !glensInternalRe.MatchString(s)
+}
+
+var glensImgExtRe = regexp.MustCompile(`(?i)\.(jpg|jpeg|png|webp|gif|svg)(\?|$)`)
+
+func glensLooksImage(u string) bool {
+	return glensImgExtRe.MatchString(u) || strings.Contains(u, "encrypted-tbn") || strings.Contains(u, "gstatic.com")
+}
+
+// glensIsThumb: URL yang layak jadi thumbnail (gstatic/tbn atau berekstensi gambar).
+func glensIsThumb(s string) bool {
+	if !glensIsURL(s) {
+		return strings.HasPrefix(s, "data:image/")
+	}
+	return strings.Contains(s, "encrypted-tbn") || strings.Contains(s, "gstatic.com") || glensImgExtRe.MatchString(s)
+}
+
+var (
+	glensJunkHashRe = regexp.MustCompile(`^[A-Za-z0-9_+/=-]{25,}$`)
+	glensJunkPreRe  = regexp.MustCompile(`(?i)^(ds:|GRID|SDCH|data:|rgb|#[0-9a-f]{3,8})`)
+	glensJunkNumRe  = regexp.MustCompile(`^[\d.,\s-]+$`)
+)
+
+func glensIsJunk(s string) bool {
+	return glensJunkHashRe.MatchString(s) || glensJunkPreRe.MatchString(s) || glensJunkNumRe.MatchString(s)
+}
+
+func glensDomainOf(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(u.Hostname(), "www.")
+}
+
+// glensDedupe membuang hasil duplikat berdasar URL sumber (tanpa query/fragment).
+func glensDedupe(list []GLensResult) []GLensResult {
+	seen := make(map[string]bool)
+	out := make([]GLensResult, 0, len(list))
+	for _, r := range list {
+		if r.Source == "" {
+			continue
+		}
+		key := r.Source
+		if idx := strings.IndexAny(key, "?#"); idx >= 0 {
+			key = key[:idx]
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, r)
+	}
+	return out
 }
