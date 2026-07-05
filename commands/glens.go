@@ -30,7 +30,6 @@ func init() {
 		Aliases:     []string{"glens", "googlelens"},
 		Pattern:     regexp.MustCompile(`(?i)^(?:glens|googlelens)\s*$`),
 		Description: "Cari sumber gambar via Google Lens (reply gambar/stiker dengan `glens`)",
-		Price:       0.02,
 		Execute:     ExecuteGLens,
 	})
 

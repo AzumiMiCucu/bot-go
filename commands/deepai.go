@@ -28,7 +28,6 @@ func init() {
 		Aliases:     []string{"deepai", "editimg", "aiedit"},
 		Pattern:     regexp.MustCompile(`(?i)^(?:deepai|editimg|aiedit)(?:\s+([\s\S]+))?$`),
 		Description: "Edit gambar/stiker via AI (DeepAI). Reply gambar + prompt",
-		Price:       0.02,
 		Execute:     ExecuteDeepAI,
 	})
 }

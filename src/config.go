@@ -13,10 +13,6 @@ type Configuration struct {
 	OwnerNumber string `json:"ownerNumber"`
 	OwnerName   string `json:"ownerName"`
 
-	// Pengaturan fitur referral broadcast otomatis
-	ReferralIntervalHours int     `json:"referralIntervalHours"`
-	ReferralReward        float64 `json:"referralReward"`
-
 	// Mode bot untuk CHAT PRIBADI (japri). Scope ini TERPISAH dari mode per-grup.
 	// "public" (default) = semua chat pribadi dilayani; "self" = hanya owner.
 	BotMode    string `json:"botMode"`    // "public" (default) atau "self" (hanya owner) — khusus japri
@@ -56,8 +52,6 @@ func InitConfig() {
 		BotNumber:             "573026384325",  // Nomor bot Anda (tanpa + atau 0)
 		OwnerNumber:           "6281234567890", // Ganti dengan nomor owner asli Anda
 		OwnerName:             "Azmi",
-		ReferralIntervalHours: 12,
-		ReferralReward:        0.5,
 		BotMode:               "public",
 		PrefixMode:            false,
 		PrefixChar:            ".",
@@ -83,12 +77,6 @@ func InitConfig() {
 		}
 
 		// Isi default untuk field baru yang mungkin belum ada di config lama
-		if AppConfig.ReferralIntervalHours <= 0 {
-			AppConfig.ReferralIntervalHours = 12
-		}
-		if AppConfig.ReferralReward <= 0 {
-			AppConfig.ReferralReward = 0.5
-		}
 		if AppConfig.BotMode == "" {
 			AppConfig.BotMode = "public"
 		}
@@ -124,7 +112,7 @@ func SetPrivateSelf(self bool) {
 }
 
 // SaveConfig menulis kembali AppConfig ke file config.json.
-// Dipakai saat owner mengubah pengaturan (mis. interval referral) secara runtime.
+// Dipakai saat owner mengubah pengaturan secara runtime.
 func SaveConfig() error {
 	if AppConfig == nil {
 		return fmt.Errorf("config belum diinisialisasi")

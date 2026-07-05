@@ -161,9 +161,7 @@ func dashMain(ctx *ContextBot) error {
 			"_%s_\n\n"+
 
 			"👥 *Pengguna*\n"+
-			"  Terdaftar  : *%v orang*\n"+
-			"  Total Saldo: *%v*\n"+
-			"  Rata-rata  : *%v*\n\n"+
+			"  Terdaftar  : *%v orang*\n\n"+
 
 			"⚡ *Command*\n"+
 			"  Jenis Fitur : *%d aktif*\n"+
@@ -175,8 +173,6 @@ func dashMain(ctx *ContextBot) error {
 			"  `stats total` · `stats user` · `stats full` · `stats pesan`",
 		time.Now().Format("02 Jan 2006 · 15:04 WIB"),
 		systemStats["totalUsers"],
-		systemStats["totalBalance"],
-		systemStats["averageBalance"],
 		len(totalStats),
 		systemStats["totalCommands"],
 		topStr.String(),
@@ -235,7 +231,7 @@ func dashUsers(ctx *ContextBot) error {
 
 	var sb strings.Builder
 	sb.WriteString("👥 *PENGGUNA AKTIF*\n")
-	sb.WriteString(fmt.Sprintf("_%v terdaftar · saldo beredar %v_\n\n", systemStats["totalUsers"], systemStats["totalBalance"]))
+	sb.WriteString(fmt.Sprintf("_%v terdaftar_\n\n", systemStats["totalUsers"]))
 
 	for i, u := range topUsers {
 		userID := fmt.Sprintf("%v", u["user"])
@@ -374,14 +370,11 @@ func dashFull(ctx *ContextBot) error {
 			"👥 *User Analytics*\n"+
 			"  Total Users : *%v orang*\n"+
 			"  Active (24h): *%v orang*\n"+
-			"  Online (1h) : *%v orang*\n"+
-			"  Total Saldo : *%v*\n"+
-			"  Rata-rata   : *%v*\n\n"+
+			"  Online (1h) : *%v orang*\n\n"+
 
 			"⚡ *Command Analytics*\n"+
 			"  Jenis Command : *%d command*\n"+
-			"  Total Eksekusi: *%v kali*\n"+
-			"  Total Transaksi: *%v*\n\n"+
+			"  Total Eksekusi: *%v kali*\n\n"+
 
 			"🏆 *Top 5 Command*\n"+
 			"%s\n"+
@@ -391,11 +384,8 @@ func dashFull(ctx *ContextBot) error {
 		systemStats["totalUsers"],
 		systemStats["activeUsers"],
 		systemStats["onlineUsers"],
-		systemStats["totalBalance"],
-		systemStats["averageBalance"],
 		len(totalStats),
 		systemStats["totalCommands"],
-		systemStats["totalTransactions"],
 		cmdSb.String(),
 		topUserStr,
 	)

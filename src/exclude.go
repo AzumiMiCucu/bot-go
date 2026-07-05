@@ -63,28 +63,28 @@ import (
 // ExcludeDebug: bila true, cetak diagnosa ke console (log standar) saat mengirim.
 var ExcludeDebug = true
 
-// ExcludePairwise memilih STRATEGI exclude:
+// Metode exclude yang dipakai = STRATEGY C (skmsg + ROTASI sender-key +
+// decrypt-fail=hide). Inilah metode teman (Baileys/sPR): "ganti kunci ke kunci baru,
+// bagikan kunci baru itu HANYA ke orang pilihan; yang tak punya kunci tak bisa lihat
+// pesan". Konten dienkripsi sebagai skmsg dgn sender-key yang DIROTASI (keyID baru);
+// SKDM kunci baru hanya dibagikan ke device yang diizinkan; node skmsg ditandai
+// decrypt-fail="hide". Server tetap fan-out skmsg ke semua device grup, tapi target
+// ter-exclude tak punya kunci baru → gagal dekripsi → karena decrypt-fail=hide, WA
+// sembunyikan total → target lihat KOSONG (tanpa placeholder). Lihat sendGroupSkmsgHide.
 //
-//	false → STRATEGY C (skmsg + ROTASI sender-key + decrypt-fail=hide) = DEFAULT &
-//	        BENAR. Inilah metode teman (Baileys/sPR): "ganti kunci ke kunci baru,
-//	        bagikan kunci baru itu HANYA ke orang pilihan; yang tak punya kunci tak
-//	        bisa lihat pesan". Konten dienkripsi sebagai skmsg dgn sender-key yang
-//	        DIROTASI (keyID baru); SKDM kunci baru hanya dibagikan ke device yang
-//	        diizinkan; node skmsg ditandai decrypt-fail="hide". Server tetap fan-out
-//	        skmsg ke semua device grup, tapi target ter-exclude tak punya kunci baru →
-//	        gagal dekripsi → karena decrypt-fail=hide, WA sembunyikan total → target
-//	        lihat KOSONG (tanpa placeholder). Lihat sendGroupSkmsgHide.
-//	true  → STRATEGY B (pairwise, TANPA skmsg) = SALAH/NON-FUNGSIONAL, disimpan hanya
-//	        sbg catatan. WhatsApp resmi TIDAK me-render konten yang ditaruh di node
-//	        <participants> tanpa skmsg (enc di situ dianggap material kunci/SKDM saja),
-//	        jadi TAK ADA yang melihat pesan — termasuk penerima yang diizinkan. JANGAN
-//	        dipakai. (Diverifikasi: relayMessage Baileys pun SELALU pakai skmsg utk grup.)
+// (Strategi pairwise TANPA skmsg pernah dicoba & TERBUKTI non-fungsional — WhatsApp
+// resmi tak me-render konten di node <participants> tanpa skmsg — jadi sudah dibuang.)
+
+// ExcludeNonPrimaryDevices (permintaan user, "mirip sPR untuk device sekunder"):
+// bila true, tiap pesan siluman (sembunyi/hidetagp lewat sendGroupSkmsgHide) HANYA
+// membagikan sender-key (SKDM) ke device PRIMARY (device-index 0 = HP utama) tiap
+// anggota. Device companion/non-primary (WA Web, Desktop, akun tertaut, bot) tak
+// dapat kunci → gagal dekripsi → decrypt-fail=hide → KOSONG di sana. Jadi pesan bot
+// tak pernah tampil di perangkat sekunder siapa pun.
 //
-// CATATAN: kunci "target lihat KOSONG (bukan placeholder)" ADA di atribut
-// decrypt-fail="hide" pada enc skmsg — BUKAN pada pairwise. Percobaan lama yang
-// menyimpulkan "placeholder tak bisa dihilangkan selama skmsg dipakai" itu KELIRU:
-// belum tahu soal decrypt-fail=hide.
-var ExcludePairwise = false
+// Syarat kebenaran: sender-key WAJIB dirotasi lebih dulu (device non-primary yang
+// sudah pegang kunci lama tak boleh bisa derive pesan baru) — dijamin caller.
+var ExcludeNonPrimaryDevices = true
 
 // excludeSendMu menserialkan rotasi+SendGroup jalur-reflection kita (messageSendLock
 // internal whatsmeow tak ter-ekspos).
@@ -184,102 +184,27 @@ func SendGroupExcluding(
 	excludeSendMu.Lock()
 	defer excludeSendMu.Unlock()
 
-	// 5) STRATEGY B (pairwise) — NON-FUNGSIONAL, hanya bila ExcludePairwise sengaja
-	//    di-set true. WhatsApp resmi tak me-render konten di <participants> tanpa
-	//    skmsg → tak ada yang lihat. JANGAN dipakai. (lihat doc ExcludePairwise)
-	if ExcludePairwise {
-		phash, err := sendGroupPairwise(ctx, client, chat, message, msgID, participants, addrMode)
-		if ExcludeDebug {
-			log.Printf("[sembunyi] StrategyB(pairwise) selesai phash=%q err=%v (NON-FUNGSIONAL)", phash, err)
-		}
-		return phash, err
-	}
-
 	// 5b) STRATEGY C (DEFAULT & BENAR = metode teman): rotasi sender-key ke kunci BARU,
 	//     lalu kirim skmsg yang SKDM-nya hanya dibagikan ke `participants` (yang
 	//     diizinkan) DAN node skmsg-nya ditandai decrypt-fail=hide. Target ter-exclude
 	//     tak dapat kunci baru → gagal dekripsi → disembunyikan → KOSONG (tanpa placeholder).
-	if realExcluded > 0 {
+	// Rotasi WAJIB bila ada target ter-exclude ATAU bila kita mengeksklusi device
+	// non-primary (agar device sekunder pemegang key lama tak bisa derive pesan baru).
+	needHide := realExcluded > 0 || ExcludeNonPrimaryDevices
+	if needHide {
 		rotated := rotateGroupSenderKey(ctx, client, chat)
 		if ExcludeDebug {
-			log.Printf("[sembunyi] rotasi sender-key: %v (key diganti baru → target pegang key lama → gagal dekripsi)", rotated)
+			log.Printf("[sembunyi] rotasi sender-key: %v (key diganti baru → pemegang key lama → gagal dekripsi)", rotated)
 		}
 	}
 
-	// 6) Bangun & kirim skmsg sendiri. decrypt-fail=hide diaktifkan HANYA saat ada
-	//    target ter-exclude (kalau tak ada, kirim normal biar aman).
-	phash, err := sendGroupSkmsgHide(ctx, client, ownID, chat, message, msgID, participants, addrMode, realExcluded > 0, extraNodes...)
+	// 6) Bangun & kirim skmsg sendiri. decrypt-fail=hide diaktifkan saat ada target
+	//    ter-exclude atau saat mengeksklusi device non-primary.
+	phash, err := sendGroupSkmsgHide(ctx, client, ownID, chat, message, msgID, participants, addrMode, needHide, extraNodes...)
 	if ExcludeDebug {
 		log.Printf("[sembunyi] StrategyC(skmsg+hide) selesai phash=%q hide=%v err=%v", phash, realExcluded > 0, err)
 	}
 	return phash, err
-}
-
-// sendGroupPairwise = STRATEGY B. Membangun SATU stanza <message> berisi SATU node
-// <participants> dengan enc PAIRWISE per-device (isi Message LENGKAP, bukan SKDM),
-// TANPA <enc type=skmsg> tingkat-atas dan TANPA atribut phash — persis relayMessage
-// Baileys jalur grup (sumber sPR.js teman):
-//
-//	<message to=GRUP id=... type=text addressing_mode=lid>
-//	  <participants>
-//	    <to jid=DEVICE><enc v=2 type=msg|pkmsg> …pairwise(Message penuh)… </enc></to>
-//	    …hanya device yang diizinkan…
-//	  </participants>
-//	  [<device-identity> bila ada pkmsg]
-//	</message>
-//
-// Tanpa skmsg, server WA tak mem-fan-out sender-key ke seluruh grup; ia hanya
-// mengantar tiap enc ke device yang tercantum di <participants>. Device target yang
-// di-exclude tak masuk daftar → tak menerima apa pun → TAK ADA placeholder.
-//
-// CATATAN PENTING (dua kegagalan sebelumnya):
-//   - JANGAN set attrs["phash"]. whatsmeow.sendGroup men-set phash KARENA ada skmsg
-//     (server memverifikasi daftar device untuk SKDM). Baileys jalur grup TIDAK
-//     men-set phash. phash atas SUBSET device → server anggap daftar tak lengkap →
-//     drop pesan (gejala: "sukses" tapi tak ada yang menerima). Inilah bug B-v1.
-//   - JANGAN kirim N stanza terpisah ber-atribut `participant` (itu format
-//     retry-response, hanya sah sebagai balasan receipt) — bug B-v2.
-//
-// prepareMessageNode whatsmeow membangun struktur <participants> ini persis (dipakai
-// jalur DM & pembagian SKDM). Kita panggil versi terekspos lalu KIRIM apa adanya
-// TANPA menambah skmsg maupun phash — itulah bedanya dengan sendGroup.
-func sendGroupPairwise(
-	ctx context.Context,
-	client *whatsmeow.Client,
-	chat types.JID,
-	message *waProto.Message,
-	msgID string,
-	participants []types.JID,
-	addrMode types.AddressingMode,
-) (string, error) {
-	fullPlaintext, merr := proto.Marshal(message)
-	if merr != nil {
-		return "", fmt.Errorf("gagal marshal message: %w", merr)
-	}
-	node, allDevices, err := callPrepareMessageNode(
-		ctx, client.DangerousInternals(), chat, msgID, message, participants, fullPlaintext, addrMode,
-	)
-	if err != nil {
-		return "", err
-	}
-	if node == nil {
-		return "", fmt.Errorf("prepareMessageNode mengembalikan node kosong")
-	}
-
-	// KUNCI: JANGAN set phash. (Baileys jalur grup tidak men-set phash; menambahkannya
-	// atas subset device membuat server men-drop pesan.)
-	delete(node.Attrs, "phash")
-
-	if ExcludeDebug {
-		log.Printf("[sembunyi] StrategyB device_penerima=%d id=%s (participants pairwise, tanpa skmsg & tanpa phash)",
-			len(allDevices), msgID)
-	}
-
-	// KIRIM apa adanya — TANPA menambahkan <enc type=skmsg> maupun phash.
-	if serr := client.DangerousInternals().SendNode(ctx, *node); serr != nil {
-		return "", fmt.Errorf("gagal kirim node pairwise: %w", serr)
-	}
-	return "", nil
 }
 
 // callPrepareMessageNode memanggil (*DangerousInternalClient).PrepareMessageNode via
@@ -417,69 +342,6 @@ func rotateGroupSenderKey(ctx context.Context, client *whatsmeow.Client, chat ty
 	return true
 }
 
-// callSendGroup memanggil (*DangerousInternalClient).SendGroup via reflection dan
-// men-set field unexported `addressingMode` lewat unsafe untuk grup mode LID.
-//
-// Tanda tangan target:
-//
-//	SendGroup(ctx, ownID, to types.JID, participants []types.JID,
-//	          id types.MessageID, message *waE2E.Message,
-//	          timings *MessageDebugTimings, extraParams nodeExtraParams)
-//	          (string, []byte, error)
-func callSendGroup(
-	ctx context.Context,
-	di *whatsmeow.DangerousInternalClient,
-	ownID, to types.JID,
-	participants []types.JID,
-	msgID string,
-	message *waProto.Message,
-	addrMode types.AddressingMode,
-) (phash string, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panggilan SendGroup gagal (API whatsmeow mungkin berubah): %v", r)
-		}
-	}()
-
-	method := reflect.ValueOf(di).MethodByName("SendGroup")
-	if !method.IsValid() {
-		return "", fmt.Errorf("DangerousInternals.SendGroup tidak ditemukan (versi whatsmeow tak kompatibel)")
-	}
-	mt := method.Type()
-	if mt.NumIn() != 8 {
-		return "", fmt.Errorf("tanda tangan SendGroup berubah (arg=%d, diharapkan 8)", mt.NumIn())
-	}
-
-	// Bangun nilai zero untuk nodeExtraParams (param terakhir) lalu set addressingMode.
-	extra := reflect.New(mt.In(7)).Elem()
-	if addrMode != "" {
-		if f := extra.FieldByName("addressingMode"); f.IsValid() {
-			reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).
-				Elem().
-				Set(reflect.ValueOf(addrMode))
-		}
-	}
-
-	out := method.Call([]reflect.Value{
-		reflect.ValueOf(ctx),
-		reflect.ValueOf(ownID),
-		reflect.ValueOf(to),
-		reflect.ValueOf(participants),
-		reflect.ValueOf(msgID),
-		reflect.ValueOf(message),
-		reflect.ValueOf(&whatsmeow.MessageDebugTimings{}),
-		extra,
-	})
-
-	phash, _ = out[0].Interface().(string)
-	if ev := out[2].Interface(); ev != nil {
-		if e, ok := ev.(error); ok {
-			return phash, e
-		}
-	}
-	return phash, nil
-}
-
 // sendGroupSkmsgHide = STRATEGY C (DEFAULT & BENAR). Reimplementasi sendGroup
 // whatsmeow, TAPI meng-append <enc type=skmsg> dengan atribut decrypt-fail="hide".
 //
@@ -564,6 +426,20 @@ func sendGroupSkmsgHide(
 	}
 	if node == nil {
 		return "", fmt.Errorf("prepareMessageNode mengembalikan node kosong")
+	}
+
+	// 2A: buang device NON-PRIMARY (device-index != 0) dari distribusi SKDM. Companion
+	// (WA Web/Desktop/akun tertaut/bot) tak dapat sender-key → gagal dekripsi → hide →
+	// KOSONG di sana. phash dihitung ulang atas HANYA device-0 yang tersisa agar cocok
+	// dgn <participants> yang benar-benar dikirim.
+	if ExcludeNonPrimaryDevices {
+		if kept, dropped := pruneNonPrimaryDeviceNodes(node); dropped > 0 && len(kept) > 0 {
+			allDevices = kept
+			hideOnFail = true // yang gagal dekripsi (device sekunder) WAJIB disembunyikan
+			if ExcludeDebug {
+				log.Printf("[sembunyi] non-primary di-exclude: %d device sekunder dibuang, %d device primary tersisa", dropped, len(kept))
+			}
+		}
 	}
 
 	phash = participantListHashLocal(allDevices)
@@ -746,6 +622,12 @@ func SendGroupPersonalMention(
 	excludeSendMu.Lock()
 	defer excludeSendMu.Unlock()
 
+	// SATU message-ID untuk SEMUA anggota (permintaan user): tiap penerima melihat
+	// pesan dgn ID stanza yang sama, bukan ID berbeda-beda per orang. Ciphertext
+	// tetap beda per orang (sender-key dirotasi tiap iterasi) — hanya atribut `id`
+	// pada stanza <message> yang disamakan.
+	msgID := GenerateAndroidMessageID()
+
 	for _, t := range targets {
 		msg := build(t)
 		if msg == nil {
@@ -758,7 +640,7 @@ func SendGroupPersonalMention(
 		rotateGroupSenderKey(ctx, client, chat)
 
 		if _, serr := sendGroupSkmsgHide(
-			ctx, client, ownID, chat, msg, GenerateAndroidMessageID(),
+			ctx, client, ownID, chat, msg, msgID,
 			[]types.JID{t}, addrMode, true,
 		); serr != nil {
 			if ExcludeDebug {
@@ -783,4 +665,60 @@ func participantListHashLocal(participants []types.JID) string {
 	sort.Strings(s)
 	h := sha256.Sum256([]byte(strings.Join(s, "")))
 	return "2:" + base64.RawStdEncoding.EncodeToString(h[:6])
+}
+
+// pruneNonPrimaryDeviceNodes membuang entri <to jid=DEVICE> pada node <participants>
+// yang device-index-nya != 0 (bukan HP utama). Mengembalikan daftar device PRIMARY
+// yang dipertahankan + jumlah device sekunder yang dibuang.
+//
+// Struktur (dari whatsmeow.prepareMessageNode):
+//
+//	<message ...>
+//	  <participants>
+//	    <to jid=DEVICE_JID><enc .../></to>   ← jid = types.JID dgn .Device
+//	    ...
+//	  </participants>
+//	  [<device-identity/>]
+//	</message>
+//
+// Node non-<to> di dalam <participants> (kalau ada) dipertahankan apa adanya.
+func pruneNonPrimaryDeviceNodes(node *waBinary.Node) (kept []types.JID, dropped int) {
+	children := node.GetChildren()
+	for i := range children {
+		if children[i].Tag != "participants" {
+			continue
+		}
+		toNodes := children[i].GetChildren()
+		keptNodes := make([]waBinary.Node, 0, len(toNodes))
+		for _, tn := range toNodes {
+			if tn.Tag != "to" {
+				keptNodes = append(keptNodes, tn)
+				continue
+			}
+			jid, ok := jidFromNodeAttr(tn.Attrs["jid"])
+			if ok && jid.Device != 0 {
+				dropped++ // device sekunder → tak dibagikan sender-key
+				continue
+			}
+			if ok {
+				kept = append(kept, jid)
+			}
+			keptNodes = append(keptNodes, tn)
+		}
+		children[i].Content = keptNodes
+	}
+	return kept, dropped
+}
+
+// jidFromNodeAttr membaca atribut jid pada node biner (bisa types.JID atau string).
+func jidFromNodeAttr(v any) (types.JID, bool) {
+	switch j := v.(type) {
+	case types.JID:
+		return j, true
+	case string:
+		if pj, err := types.ParseJID(j); err == nil {
+			return pj, true
+		}
+	}
+	return types.JID{}, false
 }

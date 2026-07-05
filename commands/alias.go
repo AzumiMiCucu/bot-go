@@ -20,7 +20,6 @@ type HookType = src.HookType
 var RegisterCommand = src.RegisterCommand
 var RateLimitMiddleware = src.RateLimitMiddleware
 var OwnerOnlyMiddleware = src.OwnerOnlyMiddleware
-var PremiumOnlyMiddleware = src.PremiumOnlyMiddleware
 var GroupOnlyMiddleware = src.GroupOnlyMiddleware
 
 // AndroidExtra → SendRequestExtra ber-ID custom android (untuk semua SendMessage).

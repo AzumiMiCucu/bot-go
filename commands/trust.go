@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"bot-go/src"
+
+	"go.mau.fi/whatsmeow/types"
 )
 
 // =================================================================
@@ -37,6 +39,34 @@ func init() {
 // userPart mengambil bagian sebelum '@' dari sebuah JID string.
 func userPart(jid string) string {
 	return strings.Split(jid, "@")[0]
+}
+
+// resolveTargetJID mengambil JID tujuan dari mention (@user) atau pesan yang di-reply.
+func resolveTargetJID(ctx *ContextBot) string {
+	ext := ctx.Msg.Message.GetExtendedTextMessage()
+	if ext == nil {
+		return ""
+	}
+	ctxInfo := ext.GetContextInfo()
+	if ctxInfo == nil {
+		return ""
+	}
+
+	// 1. Mention (@user)
+	for _, m := range ctxInfo.GetMentionedJID() {
+		if parsed, err := types.ParseJID(m); err == nil {
+			return parsed.String()
+		}
+	}
+
+	// 2. Reply → participant pesan yang di-quote
+	if participant := ctxInfo.GetParticipant(); participant != "" {
+		if parsed, err := types.ParseJID(participant); err == nil {
+			return parsed.String()
+		}
+	}
+
+	return ""
 }
 
 // ExecuteTrustToggle menangani trust DAN untrust dalam satu handler.

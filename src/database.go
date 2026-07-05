@@ -14,10 +14,8 @@ type UserData struct {
 	Name         string    `db:"name" json:"name"`
 	RegisteredAt time.Time `db:"registeredAt" json:"registeredAt"`
 	MessageCount int       `db:"messageCount" json:"messageCount"`
-	Balance      float64   `db:"balance" json:"balance"`
 	LastSeen     time.Time `db:"lastSeen" json:"lastSeen"`
 	IsBlocked    bool      `db:"isBlocked" json:"isBlocked"`
-	Tier         string    `db:"tier" json:"tier"`
 }
 
 type Database struct {
@@ -64,10 +62,8 @@ func (db *Database) createTables() {
 		name TEXT NOT NULL,
 		registeredAt DATETIME DEFAULT CURRENT_TIMESTAMP,
 		messageCount INTEGER DEFAULT 0,
-		balance REAL DEFAULT 2.0,
 		lastSeen DATETIME DEFAULT CURRENT_TIMESTAMP,
-		isBlocked INTEGER DEFAULT 0,
-		tier TEXT DEFAULT 'free'
+		isBlocked INTEGER DEFAULT 0
 	);
 
 	CREATE TABLE IF NOT EXISTS command_stats (
@@ -87,25 +83,6 @@ func (db *Database) createTables() {
 		createdDate DATE DEFAULT (date('now')),
 		createdHour INTEGER DEFAULT 0,
 		UNIQUE(commandName, createdDate, createdHour)
-	);
-
-	CREATE TABLE IF NOT EXISTS transactions (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		userId TEXT NOT NULL,
-		commandName TEXT NOT NULL,
-		amount REAL NOT NULL,
-		type TEXT,
-		executedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS referrals (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		code TEXT NOT NULL,
-		groupID TEXT NOT NULL,
-		claimedBy TEXT NOT NULL,
-		reward REAL NOT NULL,
-		claimedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(code, groupID)
 	);
 
 	CREATE TABLE IF NOT EXISTS group_settings (
@@ -145,8 +122,6 @@ func (db *Database) createTables() {
 	CREATE INDEX IF NOT EXISTS idx_cmdstats_executedAt ON command_stats(executedAt);
 	CREATE INDEX IF NOT EXISTS idx_cmdstats_name ON command_stats(commandName);
 	CREATE INDEX IF NOT EXISTS idx_cmdsummary_date ON command_summary(createdDate);
-	CREATE INDEX IF NOT EXISTS idx_transactions_userId ON transactions(userId);
-	CREATE INDEX IF NOT EXISTS idx_referrals_code ON referrals(code);
 	`
 	if _, err := db.db.Exec(schema); err != nil {
 		panic("[DB ERROR] Gagal membuat tabel: " + err.Error())
@@ -250,15 +225,15 @@ func (db *Database) AddOrUpdateUser(jid, name string) *UserData {
 
 	// 2. Slow path: query DB TANPA memegang lock (mengurangi contention)
 	userData := &UserData{}
-	err := db.db.QueryRow("SELECT id, name, registeredAt, messageCount, balance, lastSeen, isBlocked, tier FROM users WHERE id = ?", jid).
-		Scan(&userData.ID, &userData.Name, &userData.RegisteredAt, &userData.MessageCount, &userData.Balance, &userData.LastSeen, &userData.IsBlocked, &userData.Tier)
+	err := db.db.QueryRow("SELECT id, name, registeredAt, messageCount, lastSeen, isBlocked FROM users WHERE id = ?", jid).
+		Scan(&userData.ID, &userData.Name, &userData.RegisteredAt, &userData.MessageCount, &userData.LastSeen, &userData.IsBlocked)
 
 	if err == sql.ErrNoRows {
 		userData = &UserData{
-			ID: jid, Name: name, RegisteredAt: time.Now(), MessageCount: 1, Balance: 2.0, LastSeen: time.Now(), IsBlocked: false, Tier: "free",
+			ID: jid, Name: name, RegisteredAt: time.Now(), MessageCount: 1, LastSeen: time.Now(), IsBlocked: false,
 		}
-		db.db.Exec("INSERT INTO users (id,name,registeredAt,messageCount,balance,lastSeen,isBlocked,tier) VALUES (?,?,?,?,?,?,?,?)",
-			userData.ID, userData.Name, userData.RegisteredAt, userData.MessageCount, userData.Balance, userData.LastSeen, userData.IsBlocked, userData.Tier)
+		db.db.Exec("INSERT INTO users (id,name,registeredAt,messageCount,lastSeen,isBlocked) VALUES (?,?,?,?,?,?)",
+			userData.ID, userData.Name, userData.RegisteredAt, userData.MessageCount, userData.LastSeen, userData.IsBlocked)
 	} else if err == nil {
 		userData.MessageCount++
 		userData.Name = name
@@ -266,7 +241,7 @@ func (db *Database) AddOrUpdateUser(jid, name string) *UserData {
 		go db.db.Exec("UPDATE users SET name=?, messageCount=messageCount+1, lastSeen=CURRENT_TIMESTAMP WHERE id=?", name, jid)
 	} else {
 		// Error query lain: kembalikan struct minimal agar tidak nil
-		userData = &UserData{ID: jid, Name: name, RegisteredAt: time.Now(), MessageCount: 1, Balance: 2.0, LastSeen: time.Now(), Tier: "free"}
+		userData = &UserData{ID: jid, Name: name, RegisteredAt: time.Now(), MessageCount: 1, LastSeen: time.Now()}
 	}
 
 	// 3. Masukkan ke cache (double-check agar tidak menimpa entri yang dibuat goroutine lain)
@@ -278,43 +253,6 @@ func (db *Database) AddOrUpdateUser(jid, name string) *UserData {
 	db.cache[jid] = userData
 	db.mu.Unlock()
 	return userData
-}
-
-func (db *Database) DeductBalance(jid string, amount float64) (bool, float64) {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	user := db.cache[jid]
-	if user == nil || user.Balance < amount || user.IsBlocked {
-		bal := 0.0
-		if user != nil {
-			bal = user.Balance
-		}
-		return false, bal
-	}
-
-	user.Balance -= amount
-	go func(b float64) {
-		db.db.Exec("UPDATE users SET balance=? WHERE id=?", b, jid)
-		db.db.Exec("INSERT INTO transactions (userId,commandName,amount,type) VALUES (?,?,?,?)", jid, "command", amount, "deduct")
-	}(user.Balance)
-	return true, user.Balance
-}
-
-func (db *Database) AddBalance(jid string, amount float64) float64 {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	user := db.cache[jid]
-	if user == nil {
-		return 0
-	}
-	user.Balance += amount
-	go func(b float64) {
-		db.db.Exec("UPDATE users SET balance=? WHERE id=?", b, jid)
-		db.db.Exec("INSERT INTO transactions (userId,commandName,amount,type) VALUES (?,?,?,?)", jid, "admin", amount, "add")
-	}(user.Balance)
-	return user.Balance
 }
 
 func (db *Database) BlockUser(jid string) error {
@@ -357,119 +295,13 @@ func (db *Database) getOrLoadUser(jid string) *UserData {
 		return u
 	}
 	u := &UserData{}
-	err := db.db.QueryRow("SELECT id, name, registeredAt, messageCount, balance, lastSeen, isBlocked, tier FROM users WHERE id = ?", jid).
-		Scan(&u.ID, &u.Name, &u.RegisteredAt, &u.MessageCount, &u.Balance, &u.LastSeen, &u.IsBlocked, &u.Tier)
+	err := db.db.QueryRow("SELECT id, name, registeredAt, messageCount, lastSeen, isBlocked FROM users WHERE id = ?", jid).
+		Scan(&u.ID, &u.Name, &u.RegisteredAt, &u.MessageCount, &u.LastSeen, &u.IsBlocked)
 	if err != nil {
 		return nil
 	}
 	db.cache[jid] = u
 	return u
-}
-
-// TransferBalance memindahkan saldo dari satu user ke user lain secara atomik (DB + cache).
-func (db *Database) TransferBalance(fromJID, toJID string, amount float64) (bool, error) {
-	if amount <= 0 {
-		return false, fmt.Errorf("jumlah harus lebih dari 0")
-	}
-	if fromJID == toJID {
-		return false, fmt.Errorf("tidak bisa transfer ke diri sendiri")
-	}
-
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	from := db.getOrLoadUser(fromJID)
-	if from == nil {
-		return false, fmt.Errorf("pengirim tidak terdaftar")
-	}
-	if from.IsBlocked {
-		return false, fmt.Errorf("akun diblokir")
-	}
-	if from.Balance < amount {
-		return false, fmt.Errorf("saldo tidak mencukupi")
-	}
-	to := db.getOrLoadUser(toJID)
-	if to == nil {
-		return false, fmt.Errorf("penerima belum pernah berinteraksi dengan bot")
-	}
-
-	// Update DB dalam satu transaksi
-	tx, err := db.db.Begin()
-	if err != nil {
-		return false, err
-	}
-	if _, err := tx.Exec("UPDATE users SET balance=balance-? WHERE id=?", amount, fromJID); err != nil {
-		tx.Rollback()
-		return false, err
-	}
-	if _, err := tx.Exec("UPDATE users SET balance=balance+? WHERE id=?", amount, toJID); err != nil {
-		tx.Rollback()
-		return false, err
-	}
-	tx.Exec("INSERT INTO transactions (userId,commandName,amount,type) VALUES (?,?,?,?)", fromJID, "transfer", amount, "deduct")
-	tx.Exec("INSERT INTO transactions (userId,commandName,amount,type) VALUES (?,?,?,?)", toJID, "transfer", amount, "add")
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-
-	// Update cache setelah DB sukses
-	from.Balance -= amount
-	to.Balance += amount
-	return true, nil
-}
-
-// GetTopBalance mengambil daftar user dengan saldo tertinggi (untuk leaderboard).
-func (db *Database) GetTopBalance(limit int) []UserData {
-	rows, err := db.db.Query("SELECT id, name, balance, messageCount, tier FROM users WHERE isBlocked=0 ORDER BY balance DESC LIMIT ?", limit)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var result []UserData
-	for rows.Next() {
-		var u UserData
-		if rows.Scan(&u.ID, &u.Name, &u.Balance, &u.MessageCount, &u.Tier) == nil {
-			result = append(result, u)
-		}
-	}
-	return result
-}
-
-// GetBalanceRank mengembalikan peringkat user berdasarkan saldo (1 = terkaya).
-func (db *Database) GetBalanceRank(jid string) int {
-	var rank int
-	err := db.db.QueryRow(
-		"SELECT COUNT(*)+1 FROM users WHERE isBlocked=0 AND balance > (SELECT balance FROM users WHERE id=?)", jid,
-	).Scan(&rank)
-	if err != nil {
-		return 0
-	}
-	return rank
-}
-
-// ClaimReferral mencatat klaim referral. UNIQUE(code, groupID) menjamin hanya
-// satu pemenang per grup. Mengembalikan (menang, saldoBaru).
-func (db *Database) ClaimReferral(code, groupID, userJID string, reward float64) (bool, float64) {
-	res, err := db.db.Exec(
-		"INSERT OR IGNORE INTO referrals (code, groupID, claimedBy, reward) VALUES (?,?,?,?)",
-		code, groupID, userJID, reward,
-	)
-	if err != nil {
-		return false, 0
-	}
-	affected, _ := res.RowsAffected()
-	if affected == 0 {
-		// Sudah ada pemenang di grup ini untuk kode ini
-		return false, 0
-	}
-
-	// Pastikan user ada di cache lalu tambahkan reward
-	db.mu.Lock()
-	db.getOrLoadUser(userJID)
-	db.mu.Unlock()
-	newBal := db.AddBalance(userJID, reward)
-	return true, newBal
 }
 
 // =============================================
@@ -585,31 +417,20 @@ func (db *Database) GetTopUsers(limit int) []map[string]interface{} {
 }
 
 func (db *Database) GetSystemStats() map[string]interface{} {
-	var totalUsers, totalCmds, totalTx int64
-	var totalBalance float64
+	var totalUsers, totalCmds int64
 
 	db.db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
 	db.db.QueryRow("SELECT COUNT(*) FROM command_stats").Scan(&totalCmds)
-	db.db.QueryRow("SELECT COUNT(*) FROM transactions").Scan(&totalTx)
-	db.db.QueryRow("SELECT COALESCE(SUM(balance),0) FROM users").Scan(&totalBalance)
 
 	var activeUsers, onlineUsers int64
 	db.db.QueryRow(`SELECT COUNT(*) FROM users WHERE lastSeen >= datetime('now','-1 day')`).Scan(&activeUsers)
 	db.db.QueryRow(`SELECT COUNT(*) FROM users WHERE lastSeen >= datetime('now','-1 hour')`).Scan(&onlineUsers)
 
-	avgBal := 0.0
-	if totalUsers > 0 {
-		avgBal = totalBalance / float64(totalUsers)
-	}
-
 	return map[string]interface{}{
-		"totalUsers":        totalUsers,
-		"activeUsers":       activeUsers,
-		"onlineUsers":       onlineUsers,
-		"totalCommands":     totalCmds,
-		"totalTransactions": totalTx,
-		"totalBalance":      fmt.Sprintf("$%.3f", totalBalance),
-		"averageBalance":    fmt.Sprintf("$%.3f", avgBal),
+		"totalUsers":    totalUsers,
+		"activeUsers":   activeUsers,
+		"onlineUsers":   onlineUsers,
+		"totalCommands": totalCmds,
 	}
 }
 

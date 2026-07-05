@@ -26,7 +26,6 @@ func init() {
 		Aliases:     []string{"tt", "ttdl", "tiktok"},
 		Pattern:     regexp.MustCompile(`(?i)^(?:tiktok|ttdl|tt)\s+(.+)`),
 		Description: "Unduh video TikTok — kirim media langsung (tambah --view untuk player link)",
-		Price:       0.015,
 		Execute:     ExecuteTikTok,
 	})
 }

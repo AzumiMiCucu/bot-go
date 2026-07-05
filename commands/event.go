@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"crypto/rand"
 	"regexp"
 	"strings"
 	"time"
@@ -69,9 +70,19 @@ func ExecuteEvent(ctx *ContextBot) error {
 		ev.Location = &waProto.LocationMessage{Name: proto.String(loc)}
 	}
 
+	// WAJIB: kartu Event butuh messageSecret di MessageContextInfo (persis poll via
+	// BuildPollCreation). Tanpa ini WA tak me-render/menerima kartu event & RSVP
+	// (EventResponse pakai secret ini) gagal → event seolah tak terkirim. Ini bug lama:
+	// EventMessage dikirim tanpa secret.
+	secret := make([]byte, 32)
+	_, _ = rand.Read(secret)
+
 	_ = ctx.React("📅")
 	_, err := ctx.Client.SendMessage(context.Background(), ctx.ChatJID, &waProto.Message{
 		EventMessage: ev,
+		MessageContextInfo: &waProto.MessageContextInfo{
+			MessageSecret: secret,
+		},
 	})
 	if err != nil {
 		_ = ctx.React("❌")

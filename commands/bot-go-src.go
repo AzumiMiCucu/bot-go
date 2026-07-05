@@ -95,7 +95,6 @@ func init() {
 		"PSBaseURL":                reflect.ValueOf(constant.MakeFromLiteral("\"https://ps.azumi.dev\"", token.STRING, 0)),
 		"ParsePremiumDuration":     reflect.ValueOf(src.ParsePremiumDuration),
 		"PostFileTool":             reflect.ValueOf(src.PostFileTool),
-		"PremiumOnlyMiddleware":    reflect.ValueOf(src.PremiumOnlyMiddleware),
 		"Print":                    reflect.ValueOf(src.Print),
 		"RateLimitMiddleware":      reflect.ValueOf(src.RateLimitMiddleware),
 		"ReactMessage":             reflect.ValueOf(src.ReactMessage),

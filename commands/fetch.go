@@ -17,7 +17,6 @@ func init() {
 		Pattern:     regexp.MustCompile(`(?i)^\s*(?:fetch|get)\s+(https?:\/\/[^\s]+)\s*$`),
 		Description: "Fetch HTTP request dengan Custom Headers Android (Khusus Owner)",
 		Execute:     ExecuteFetch,
-		Price:       0.09,
 	}) // Menggunakan middleware khusus owner agar aman
 }
 

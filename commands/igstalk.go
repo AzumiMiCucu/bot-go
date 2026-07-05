@@ -124,7 +124,6 @@ func init() {
 		Aliases:     []string{"igstalk", "stalkig"},
 		Pattern:     regexp.MustCompile(`(?i)^(?:igstalk|stalkig|igprofile)\s+(.+)`),
 		Description: "Mengambil data profil Instagram dan Postingan Terbaru",
-		Price:       0.010,
 		Execute:     ExecuteIGStalk,
 	})
 }

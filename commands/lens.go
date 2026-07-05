@@ -29,7 +29,6 @@ func init() {
 		Aliases:     []string{"lens", "tineye"},
 		Pattern:     regexp.MustCompile(`(?i)^(?:lens|carigambar|tineye|sauce)\s*$`),
 		Description: "Cari sumber/asal gambar di web (reply gambar/stiker dengan `lens`)",
-		Price:       0.02,
 		Execute:     ExecuteLens,
 	})
 }

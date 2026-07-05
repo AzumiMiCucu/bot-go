@@ -210,17 +210,10 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		Args:        extractedArgs,
 		TextMessage: textMessage,
 		PushName:    pushName,
-		UserBalance: userData.Balance,
 		IsGroup:     evt.Info.IsGroup,
 		IsOwner:     isOwner,
 		IsPremium:   isPremium,
 		Ctx:         context.Background(),
-		AddBalance: func(amount float64) float64 {
-			return src.DB.AddBalance(dbUserID, amount)
-		},
-		DeductBalance: func(amount float64) (bool, float64) {
-			return src.DB.DeductBalance(dbUserID, amount)
-		},
 		Reply: func(text string) error {
 			// Hasil command premium di grup → sembunyikan dari member non-premium.
 			if isPremiumCmd && evt.Info.IsGroup {
@@ -319,18 +312,6 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 
 	fmt.Printf("⚙️ [EXECUTE] %s → '%s' (Args: %s)\n", pushName, matchedCommand.Name, extractedArgs)
 
-	// Balance Check
-	if matchedCommand.Price > 0 {
-		success, remaining := src.DB.DeductBalance(dbUserID, matchedCommand.Price)
-		if !success {
-			_ = ReplyMsg(client, chatJID, evt, fmt.Sprintf(
-				"💳 *SALDO TIDAK MENCUKUPI*\n\nFitur *%s* membutuhkan *$%.3f*.\nSaldo kamu: *$%.3f*",
-				matchedCommand.Name, matchedCommand.Price, remaining,
-			))
-			return
-		}
-	}
-
 	// Record Stats secara Asinkron
 	go func() {
 		_ = src.DB.AddCommandStat(matchedCommand.Name, dbUserID)
@@ -345,10 +326,6 @@ func MessageHandler(client *whatsmeow.Client, evt *events.Message) {
 		err := commands.ExecuteWithMiddlewares(ctxBot, matchedCommand)
 		if err != nil {
 			fmt.Printf("❌ [ERROR - %s]: %v\n", matchedCommand.Name, err)
-			if matchedCommand.Price > 0 {
-				src.DB.AddBalance(dbUserID, matchedCommand.Price)
-				_ = ctxBot.Reply(fmt.Sprintf("⚠️ Gagal mengeksekusi *%s*. Saldo dikembalikan.\nError: %v", matchedCommand.Name, err))
-			}
 			_ = commands.ExecuteHooks(commands.HookOnError, ctxBot, matchedCommand, err)
 		} else {
 			_ = commands.ExecuteHooks(commands.HookAfterExecute, ctxBot, matchedCommand, nil)

@@ -27,7 +27,6 @@ type Command struct {
 	Pattern      *regexp.Regexp
 	Description  string
 	Execute      func(*ContextBot) error
-	Price        float64
 	Cooldown     time.Duration
 	// Premium: bila true, command HANYA bisa dijalankan user premium (owner selalu
 	// premium), dan HASIL-nya di grup disembunyikan dari member non-premium lewat
@@ -49,12 +48,9 @@ type ContextBot struct {
 	Args          string
 	TextMessage   string
 	PushName      string
-	UserBalance   float64
 	IsOwner       bool
 	IsPremium     bool
 	IsGroup       bool
-	AddBalance    func(float64) float64
-	DeductBalance func(float64) (bool, float64)
 	Reply         func(string) error
 	ReplyWithID   func(string) (string, error)
 	React         func(string) error
@@ -248,13 +244,6 @@ func RateLimitMiddleware(maxRequests int, duration time.Duration) Middleware {
 func OwnerOnlyMiddleware(ctx *ContextBot) error {
 	if !ctx.IsOwner {
 		return fmt.Errorf(" ")
-	}
-	return nil
-}
-
-func PremiumOnlyMiddleware(ctx *ContextBot) error {
-	if ctx.UserBalance < 1.0 {
-		return fmt.Errorf("💳 Saldo tidak cukup untuk fitur premium")
 	}
 	return nil
 }
