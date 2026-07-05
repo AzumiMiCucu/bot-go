@@ -169,6 +169,7 @@ func main() {
 	// Mulai scheduler latar belakang
 	src.StartAutoReadScheduler(client)
 	src.StartAutoClearScheduler(client)
+	src.StartReminderScheduler(client)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
