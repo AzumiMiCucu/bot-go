@@ -498,7 +498,7 @@ func ExecuteAntiSPRToggle(ctx *ContextBot) error {
 		return ctx.Reply("*Anti-sPR AKTIF*.")
 	case "off":
 		src.DB.SetGroupAntiSPR(groupID, false)
-		return ctx.Reply("🕵️ *Anti-sPR NONAKTIF*.")
+		return ctx.Reply("*Anti-sPR NONAKTIF*.")
 	case "status", "show":
 		return antisprStatus(ctx, groupID)
 	case "log", "dump":
