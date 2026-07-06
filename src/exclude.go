@@ -84,7 +84,14 @@ var ExcludeDebug = true
 //
 // Syarat kebenaran: sender-key WAJIB dirotasi lebih dulu (device non-primary yang
 // sudah pegang kunci lama tak boleh bisa derive pesan baru) — dijamin caller.
-var ExcludeNonPrimaryDevices = true
+//
+// DINONAKTIFKAN (false): saat true, `needHide` jadi SELALU aktif sehingga SETIAP
+// pesan premium/sembunyi memangkas seluruh device non-primary + rotasi + hide —
+// akibatnya penerima sah (mis. yang baca di WA Web/Desktop, atau saat SKDM baru
+// tak sempat diterapkan di HP) melihat KOSONG. Itu membuat premium & sembunyi
+// seolah "tak mengirim apa-apa". Dengan false, hide hanya jalan saat MEMANG ada
+// target yang di-exclude (perilaku yang sudah terbukti bekerja).
+var ExcludeNonPrimaryDevices = false
 
 // excludeSendMu menserialkan rotasi+SendGroup jalur-reflection kita (messageSendLock
 // internal whatsmeow tak ter-ekspos).
@@ -622,12 +629,10 @@ func SendGroupPersonalMention(
 	excludeSendMu.Lock()
 	defer excludeSendMu.Unlock()
 
-	// SATU message-ID untuk SEMUA anggota (permintaan user): tiap penerima melihat
-	// pesan dgn ID stanza yang sama, bukan ID berbeda-beda per orang. Ciphertext
-	// tetap beda per orang (sender-key dirotasi tiap iterasi) — hanya atribut `id`
-	// pada stanza <message> yang disamakan.
-	msgID := GenerateAndroidMessageID()
-
+	// ID pesan HARUS UNIK per anggota. Memakai satu ID sama untuk N pesan berbeda ke
+	// grup yang sama membuat WhatsApp men-dedup: hanya pesan PERTAMA yang ditampilkan,
+	// sisanya di-drop sebagai duplikat → mayoritas anggota tak menerima apa-apa. Jadi
+	// tiap iterasi memakai GenerateAndroidMessageID() sendiri.
 	for _, t := range targets {
 		msg := build(t)
 		if msg == nil {
@@ -640,7 +645,7 @@ func SendGroupPersonalMention(
 		rotateGroupSenderKey(ctx, client, chat)
 
 		if _, serr := sendGroupSkmsgHide(
-			ctx, client, ownID, chat, msg, msgID,
+			ctx, client, ownID, chat, msg, GenerateAndroidMessageID(),
 			[]types.JID{t}, addrMode, true,
 		); serr != nil {
 			if ExcludeDebug {
