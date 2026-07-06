@@ -44,6 +44,13 @@ func eventHandler(evt interface{}) {
 		// [CAPTURE] Dump story/status saluran yang disiarkan via status@broadcast.
 		go src.CaptureStatusMessage(v)
 
+		// [ANTI-SPR] Pesan grup yang BERHASIL didekripsi: (1) batalkan kandidat sPR
+		// jalur-(2) (resend = desync normal); (2) deteksi sPR walau bot BUKAN target
+		// via atribut decrypt-fail=hide pada node <enc skmsg> (lihat commands/antispr.go).
+		if v.Info.IsGroup {
+			go commands.OnGroupMessage(client, v)
+		}
+
 		// Proses async agar receive-loop whatsmeow tidak terblokir
 		go MessageHandler(client, v)
 

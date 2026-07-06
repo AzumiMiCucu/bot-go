@@ -1,6 +1,7 @@
 package src
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -35,6 +36,23 @@ type RawNodeReport struct {
 	ChildTags []string          // tag anak langsung (enc/bot/biz/verified_name/meta/device-identity/franking/...)
 	EncVer    string            // atribut v pada <enc> (versi enkripsi)
 	EncType   string            // atribut type pada <enc> (msg/pkmsg/skmsg/...)
+	// EncDecryptFail = atribut decrypt-fail pada <enc>. ""/"show" = default (device
+	// gagal-dekripsi tampil placeholder); "hide" = sembunyikan total. Klien WA resmi
+	// hanya set "hide" utk reaction/poll-update/edit — "hide" pada pesan teks/media
+	// biasa = tanda sPR (pengirim menyembunyikan pesan dari sebagian anggota). Dipakai
+	// commands/antispr.go untuk deteksi sPR walau bot BUKAN target (bot tetap lihat atribut).
+	EncDecryptFail string
+	// EncHideAny = true bila ADA node <enc> mana pun (bukan hanya yang pertama) ber-
+	// atribut decrypt-fail=hide. Penting: pesan grup sPR memuat DUA enc — konten
+	// <enc type=skmsg decrypt-fail=hide> DAN <enc type=pkmsg> (SKDM kunci baru). Kalau
+	// bot bukan target, whatsmeow memproses/gagal pada pkmsg (fail="") duluan & berhenti,
+	// jadi DecryptFailMode event = "" walau skmsg-nya SEBENARNYA hide. Scan semua enc
+	// menangkap hide itu → deteksi sPR walau bot bukan target & gagal karena sesi rusak.
+	EncHideAny bool
+	// HideEncType = tipe enc yang ber-hide (biasanya "skmsg"); "" bila tak ada.
+	HideEncType string
+	// EncTypes = semua tipe <enc> dalam node (mis. ["skmsg","pkmsg"]) — diagnostik.
+	EncTypes []string
 }
 
 // Has: true bila child-tag bernama name ada.
@@ -117,16 +135,44 @@ func CaptureRawNode(xml string) {
 		rep.ChildTags = append(rep.ChildTags, tag)
 	}
 
-	// Atribut <enc> (versi & tipe enkripsi) — info pembeda klien.
-	if em := reEncBlock.FindStringSubmatch(xml); em != nil {
+	// Atribut <enc> — SCAN SEMUA blok enc (pesan grup sPR punya skmsg konten + pkmsg
+	// SKDM). Enc pertama mengisi EncVer/EncType/EncDecryptFail (kompat lama); any-hide
+	// diakumulasi ke EncHideAny/HideEncType (sinyal sPR walau enc pertama pkmsg biasa).
+	for i, em := range reEncBlock.FindAllStringSubmatch(xml, -1) {
+		var etype, edf string
 		for _, a := range reNodeAttr.FindAllStringSubmatch(em[1], -1) {
 			switch a[1] {
 			case "v":
-				rep.EncVer = a[2]
+				if i == 0 {
+					rep.EncVer = a[2]
+				}
 			case "type":
-				rep.EncType = a[2]
+				etype = a[2]
+				if i == 0 {
+					rep.EncType = a[2]
+				}
+			case "decrypt-fail":
+				edf = a[2]
+				if i == 0 {
+					rep.EncDecryptFail = a[2]
+				}
 			}
 		}
+		if etype != "" {
+			rep.EncTypes = append(rep.EncTypes, etype)
+		}
+		if edf == "hide" {
+			rep.EncHideAny = true
+			if rep.HideEncType == "" {
+				rep.HideEncType = etype
+			}
+		}
+	}
+
+	// Diagnostik: cetak saat ada enc ber-hide (sinyal sPR) — bantu kalibrasi lapangan.
+	if rep.EncHideAny {
+		fmt.Printf("[RAWNODE] hide-enc id=%s from=%s participant=%s type=%s encs=%v hideOn=%s\n",
+			id, attrs["from"], attrs["participant"], attrs["type"], rep.EncTypes, rep.HideEncType)
 	}
 
 	rawNodeCacheMu.Lock()
