@@ -3,6 +3,7 @@ module bot-go
 go 1.25.8
 
 require (
+	github.com/PuerkitoBio/goquery v1.12.0
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/mattn/go-sqlite3 v1.14.44
 	github.com/purpshell/meowcaller v0.0.0-20260624070908-656eef01a70e
@@ -15,6 +16,7 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
+	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/beeper/argo-go v1.1.2 // indirect
 	github.com/coder/websocket v1.8.14 // indirect
 	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect

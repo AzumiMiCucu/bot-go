@@ -153,6 +153,8 @@ func RouteReply(ctx *ContextBot) bool {
 		_ = handleKompasReply(ctx, rc)
 	case "samehada":
 		_ = handleSamehadaReply(ctx, rc)
+	case "nekopoi":
+		_ = handleNekopoiReply(ctx, rc)
 	case "ytmusic":
 		// Hanya konsumsi bila reply benar-benar memilih lagu dari daftar.
 		return handleYtMusicReply(ctx, rc)
