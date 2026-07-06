@@ -424,10 +424,8 @@ func fireAntiSPRAlertJID(client *whatsmeow.Client, chat, sender types.JID, msgID
 
 	// Alert: tag pengirim di grup. Pakai bentuk yang bisa di-mention (sender @grup).
 	mentionJID := sender.ToNonAD()
-	text := fmt.Sprintf(
-		"🕵️ *Pesan Tersembunyi Terdeteksi (anti-sPR)*\n\n"+
-			"@%s barusan mengirim pesan yang *sengaja disembunyikan* dari sebagian anggota grup (teknik sPR/bisik).\n\n"+
-			"_Isi pesannya tidak bisa dibaca semua orang — hati-hati._",
+	text := fmt.Sprintf(	
+			"@%s terdeteksi orang alay",
 		mentionJID.User)
 
 	msg := &waProto.Message{
@@ -497,7 +495,7 @@ func ExecuteAntiSPRToggle(ctx *ContextBot) error {
 	switch sub {
 	case "on":
 		src.DB.SetGroupAntiSPR(groupID, true)
-		return ctx.Reply("🕵️ *Anti-sPR AKTIF*.\n\nBot akan membongkar (tag) siapa pun yang mengirim pesan tersembunyi di grup ini.")
+		return ctx.Reply("*Anti-sPR AKTIF*.")
 	case "off":
 		src.DB.SetGroupAntiSPR(groupID, false)
 		return ctx.Reply("🕵️ *Anti-sPR NONAKTIF*.")
