@@ -16,6 +16,10 @@ var (
 	antibotCacheMu sync.RWMutex
 	antibotLoaded  bool
 
+	antisprCache   = make(map[string]bool) // groupID -> antispr enabled
+	antisprCacheMu sync.RWMutex
+	antisprLoaded  bool
+
 	trustCache   = make(map[string]map[string]bool) // groupID -> set(userID)
 	trustCacheMu sync.RWMutex
 	trustLoaded  bool
@@ -244,6 +248,54 @@ func (db *Database) SetGroupAntibot(groupID string, enabled bool) {
 	antibotCacheMu.Lock()
 	antibotCache[groupID] = enabled
 	antibotCacheMu.Unlock()
+}
+
+// loadAntiSPRCache memuat kolom antispr semua group_settings ke cache sekali saja.
+func (db *Database) loadAntiSPRCache() {
+	antisprCacheMu.Lock()
+	defer antisprCacheMu.Unlock()
+	if antisprLoaded {
+		return
+	}
+	rows, err := db.db.Query("SELECT groupID, antispr FROM group_settings")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var gid string
+			var v int
+			if rows.Scan(&gid, &v) == nil {
+				antisprCache[gid] = v == 1
+			}
+		}
+	}
+	antisprLoaded = true
+}
+
+// IsGroupAntiSPR mengembalikan status anti-sPR (deteksi pesan tersembunyi) suatu grup.
+func (db *Database) IsGroupAntiSPR(groupID string) bool {
+	if db == nil || db.db == nil {
+		return false
+	}
+	db.loadAntiSPRCache()
+	antisprCacheMu.RLock()
+	defer antisprCacheMu.RUnlock()
+	return antisprCache[groupID]
+}
+
+// SetGroupAntiSPR mengaktifkan/menonaktifkan anti-sPR untuk grup.
+func (db *Database) SetGroupAntiSPR(groupID string, enabled bool) {
+	val := 0
+	if enabled {
+		val = 1
+	}
+	db.db.Exec(`
+		INSERT INTO group_settings (groupID, antispr, updatedAt) VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(groupID) DO UPDATE SET antispr=?, updatedAt=CURRENT_TIMESTAMP
+	`, groupID, val, val)
+
+	antisprCacheMu.Lock()
+	antisprCache[groupID] = enabled
+	antisprCacheMu.Unlock()
 }
 
 // loadTrustCache memuat semua group_trust ke cache sekali saja.

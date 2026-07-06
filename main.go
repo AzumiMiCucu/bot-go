@@ -47,6 +47,12 @@ func eventHandler(evt interface{}) {
 		// Proses async agar receive-loop whatsmeow tidak terblokir
 		go MessageHandler(client, v)
 
+	case *events.UndecryptableMessage:
+		// [ANTI-SPR] Pesan yang gagal didekripsi bot. Bila ditandai decrypt-fail=hide
+		// di grup, itu tanda tangan pesan sPR/bisik yang sengaja menyembunyikan bot →
+		// bongkar pengirimnya (bila anti-sPR aktif di grup tsb). Lihat commands/antispr.go.
+		go commands.HandleUndecryptable(client, v)
+
 	case *events.NewsletterLiveUpdate:
 		// [CAPTURE] Update/story saluran yang diikuti bot → dump struktur asli
 		// ke tmp/capture_channel_status/*.json (untuk kalibrasi command upswc).

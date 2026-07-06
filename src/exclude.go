@@ -111,6 +111,43 @@ func SendGroupExcluding(
 	excludeMe bool,
 	extraNodes ...waBinary.Node, // node tambahan (mis. biz native_flow utk tombol) diteruskan ke stanza
 ) (string, error) {
+	return sendGroupExcludingImpl(ctx, client, chat, message, msgID, exclude, excludeMe, false, extraNodes...)
+}
+
+// SendGroupExcludingDev sama seperti SendGroupExcluding, TAPI selain meng-exclude
+// target di `exclude`, juga membuang SEMUA device NON-PRIMARY (device-index != 0 =
+// WA Web/Desktop/tablet/akun tertaut/bot) dari SETIAP anggota. Hanya HP UTAMA (device
+// 0) tiap orang yang bisa membaca; perangkat sekunder siapa pun melihat KOSONG.
+//
+// Ini per-panggilan (opt-in eksplisit dari command `sembunyi -dev`), BUKAN flag global
+// — jadi pengiriman normal (premium/sembunyi biasa) tak terpengaruh. Lihat catatan
+// regresi pada ExcludeNonPrimaryDevices.
+func SendGroupExcludingDev(
+	ctx context.Context,
+	client *whatsmeow.Client,
+	chat types.JID,
+	message *waProto.Message,
+	msgID string,
+	exclude []types.JID,
+	excludeMe bool,
+	extraNodes ...waBinary.Node,
+) (string, error) {
+	return sendGroupExcludingImpl(ctx, client, chat, message, msgID, exclude, excludeMe, true, extraNodes...)
+}
+
+// sendGroupExcludingImpl = inti bersama SendGroupExcluding / SendGroupExcludingDev.
+// pruneNonPrimary=true → hanya device-0 tiap anggota yang menerima sender-key.
+func sendGroupExcludingImpl(
+	ctx context.Context,
+	client *whatsmeow.Client,
+	chat types.JID,
+	message *waProto.Message,
+	msgID string,
+	exclude []types.JID,
+	excludeMe bool,
+	pruneNonPrimary bool,
+	extraNodes ...waBinary.Node,
+) (string, error) {
 	if client == nil || client.Store == nil || client.Store.ID == nil {
 		return "", fmt.Errorf("client belum siap (belum login)")
 	}
@@ -197,7 +234,7 @@ func SendGroupExcluding(
 	//     tak dapat kunci baru → gagal dekripsi → disembunyikan → KOSONG (tanpa placeholder).
 	// Rotasi WAJIB bila ada target ter-exclude ATAU bila kita mengeksklusi device
 	// non-primary (agar device sekunder pemegang key lama tak bisa derive pesan baru).
-	needHide := realExcluded > 0 || ExcludeNonPrimaryDevices
+	needHide := realExcluded > 0 || pruneNonPrimary || ExcludeNonPrimaryDevices
 	if needHide {
 		rotated := rotateGroupSenderKey(ctx, client, chat)
 		if ExcludeDebug {
@@ -207,7 +244,7 @@ func SendGroupExcluding(
 
 	// 6) Bangun & kirim skmsg sendiri. decrypt-fail=hide diaktifkan saat ada target
 	//    ter-exclude atau saat mengeksklusi device non-primary.
-	phash, err := sendGroupSkmsgHide(ctx, client, ownID, chat, message, msgID, participants, addrMode, needHide, extraNodes...)
+	phash, err := sendGroupSkmsgHide(ctx, client, ownID, chat, message, msgID, participants, addrMode, needHide, pruneNonPrimary, extraNodes...)
 	if ExcludeDebug {
 		log.Printf("[sembunyi] StrategyC(skmsg+hide) selesai phash=%q hide=%v err=%v", phash, realExcluded > 0, err)
 	}
@@ -298,6 +335,20 @@ func SendSecretText(
 	return SendGroupExcluding(ctx, client, chat, msg, "", exclude, excludeMe)
 }
 
+// SendSecretTextDev = seperti SendSecretText tapi juga membuang seluruh device
+// NON-PRIMARY (hanya HP utama tiap anggota yang bisa baca). Dipakai `sembunyi -dev`.
+func SendSecretTextDev(
+	ctx context.Context,
+	client *whatsmeow.Client,
+	chat types.JID,
+	text string,
+	exclude []types.JID,
+	excludeMe bool,
+) (string, error) {
+	msg := &waProto.Message{Conversation: proto.String(text)}
+	return SendGroupExcludingDev(ctx, client, chat, msg, "", exclude, excludeMe)
+}
+
 // rotateGroupSenderKey MENGGANTI sender-key BOT utk grup tsb dengan key BARU
 // (keyID baru, iterasi 0). whatsmeow memakai senderKeyName =
 // (group=chat.String(), sender=ownLID.SignalAddress()) — kita timpa baris itu.
@@ -376,6 +427,7 @@ func sendGroupSkmsgHide(
 	participants []types.JID,
 	addrMode types.AddressingMode,
 	hideOnFail bool,
+	pruneNonPrimary bool,
 	extraNodes ...waBinary.Node,
 ) (phash string, err error) {
 	defer func() {
@@ -439,7 +491,7 @@ func sendGroupSkmsgHide(
 	// (WA Web/Desktop/akun tertaut/bot) tak dapat sender-key → gagal dekripsi → hide →
 	// KOSONG di sana. phash dihitung ulang atas HANYA device-0 yang tersisa agar cocok
 	// dgn <participants> yang benar-benar dikirim.
-	if ExcludeNonPrimaryDevices {
+	if pruneNonPrimary || ExcludeNonPrimaryDevices {
 		if kept, dropped := pruneNonPrimaryDeviceNodes(node); dropped > 0 && len(kept) > 0 {
 			allDevices = kept
 			hideOnFail = true // yang gagal dekripsi (device sekunder) WAJIB disembunyikan
@@ -646,7 +698,7 @@ func SendGroupPersonalMention(
 
 		if _, serr := sendGroupSkmsgHide(
 			ctx, client, ownID, chat, msg, GenerateAndroidMessageID(),
-			[]types.JID{t}, addrMode, true,
+			[]types.JID{t}, addrMode, true, false,
 		); serr != nil {
 			if ExcludeDebug {
 				log.Printf("[hidetagp] gagal kirim ke %s: %v", t.User, serr)

@@ -29,13 +29,18 @@ import (
 
 var reMentionTok = regexp.MustCompile(`@\d+`)
 
+// reDevFlag menangkap flag -dev / --dev / -device di mana pun pada teks (dibuang
+// dari teks yang dikirim). Bila ada → mode "exclude device non-primary": hanya HP
+// utama (device 0) tiap anggota yang bisa membaca; WA Web/Desktop/tablet KOSONG.
+var reDevFlag = regexp.MustCompile(`(?i)(?:^|\s)--?dev(?:ice)?\b`)
+
 func init() {
 	RegisterCommand(Command{
 		Name:        "Sembunyi",
 		Category:    "Group",
 		Aliases:     []string{"sembunyi", "spr", "bisik", "hidden"},
 		Pattern:     regexp.MustCompile(`(?i)^\s*(?:sembunyi|spr|bisik|hidden)(?:\s+([\s\S]+))?\s*$`),
-		Description: "[Admin] Kirim pesan ke grup yang TIDAK diterima target (reply/tag). Tanpa target → exclude pengirim.",
+		Description: "[Admin] Kirim pesan ke grup yang TIDAK diterima target (reply/tag). Tanpa target → exclude pengirim. Flag `-dev` → hanya HP utama tiap anggota yang bisa baca (WA Web/Desktop/tablet kosong).",
 		Execute:     ExecuteSembunyi,
 	})
 }
@@ -53,21 +58,37 @@ func ExecuteSembunyi(ctx *ContextBot) error {
 		return nil // bukan admin/owner → diam (hindari spam)
 	}
 
+	raw := strings.TrimSpace(ctx.Args)
+
+	// Deteksi & buang flag -dev (mode exclude device non-primary).
+	devMode := reDevFlag.MatchString(raw)
+	if devMode {
+		raw = reDevFlag.ReplaceAllString(raw, " ")
+	}
+
 	// Teks yang dikirim = argumen, dengan token mention (@123) dibuang.
-	text := reMentionTok.ReplaceAllString(strings.TrimSpace(ctx.Args), "")
+	text := reMentionTok.ReplaceAllString(raw, "")
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return ctx.Reply("✍️ Tulis pesannya.\n\n*Contoh:*\n› Reply pesan target lalu: `sembunyi <teks>`\n› Atau: `sembunyi <teks> @target`")
+		return ctx.Reply("✍️ Tulis pesannya.\n\n*Contoh:*\n› Reply pesan target lalu: `sembunyi <teks>`\n› Atau: `sembunyi <teks> @target`\n› Cuma tampil di HP utama semua orang: `sembunyi -dev <teks>`")
 	}
 
-	// Target yang di-exclude: mention + pesan yang di-reply. Bila tak ada → pengirim.
+	// Target yang di-exclude: mention + pesan yang di-reply.
 	exclude := excludeTargets(ctx)
-	if len(exclude) == 0 {
-		exclude = append(exclude, ctx.SenderJID)
-	}
 
 	_ = ctx.React("⏳")
-	_, err = src.SendSecretText(ctx.Ctx, ctx.Client, ctx.ChatJID, text, exclude, true)
+	if devMode {
+		// Mode -dev: buang seluruh device non-primary. Target eksplisit (mention/reply)
+		// tetap dihormati bila ada; tanpa target, tak perlu meng-exclude pengirim —
+		// tujuannya "hanya muncul di HP utama tiap orang".
+		_, err = src.SendSecretTextDev(ctx.Ctx, ctx.Client, ctx.ChatJID, text, exclude, true)
+	} else {
+		// Mode normal: tanpa target → exclude pengirim sendiri.
+		if len(exclude) == 0 {
+			exclude = append(exclude, ctx.SenderJID)
+		}
+		_, err = src.SendSecretText(ctx.Ctx, ctx.Client, ctx.ChatJID, text, exclude, true)
+	}
 	if err != nil {
 		_ = ctx.React("❌")
 		return ctx.Reply("❌ Gagal mengirim pesan tersembunyi.\n_" + err.Error() + "_")
