@@ -52,10 +52,12 @@ import (
 // =================================================================
 
 const (
-	// antisprAlertCooldown mencegah spam: satu aksi sPR bisa memicu beberapa
-	// UndecryptableMessage (retry-receipt bisa mengulang event). Satu alert per
-	// (grup, pengirim) tiap jendela ini.
-	antisprAlertCooldown = 45 * time.Second
+	// antisprDedupTTL: dedup alert per (grup, message-ID). Satu aksi sPR bisa memicu
+	// beberapa event untuk ID SAMA (retry-receipt mengulang; undecryptable lalu
+	// resend→events.Message). Dedup per-ID = tiap pesan sPR di-alert TEPAT sekali,
+	// LANGSUNG — pesan sPR BARU (ID baru) tak tertahan cooldown pengirim (dulu 45s/
+	// pengirim bikin sPR beruntun "kadang-kadang doang" tak teralert).
+	antisprDedupTTL = 2 * time.Minute
 
 	// antisprConfirmWindow: untuk jalur (2) tanpa hide, tunggu selama ini untuk
 	// melihat apakah pesan di-resend (→ desync normal, batalkan). Bila lewat tanpa
@@ -67,7 +69,7 @@ const (
 )
 
 var (
-	antisprSeen   = make(map[string]time.Time) // key = grup|pengirim → waktu alert terakhir
+	antisprSeen   = make(map[string]time.Time) // key = grup|message-ID → waktu alert (dedup)
 	antisprSeenMu sync.Mutex
 
 	// antisprPending melacak kandidat jalur-(2) yang menunggu konfirmasi
@@ -168,8 +170,10 @@ func inspectHideAttr(client *whatsmeow.Client, evt *events.Message) {
 	if !ok || !raw.Available {
 		return // node mentah tak tertangkap → tak bisa menilai
 	}
-	if raw.EncType != "skmsg" || raw.EncDecryptFail != "hide" {
-		return // bukan pesan grup ber-hide
+	// Sinyal sPR = ADA <enc type=skmsg decrypt-fail=hide> di node (scan SEMUA enc,
+	// bukan cuma pertama — node punya msg/pkmsg SKDM DULU lalu skmsg konten).
+	if !raw.EncHideAny || raw.HideEncType != "skmsg" {
+		return // bukan pesan grup konten ber-hide
 	}
 	// Kecualikan tipe yang WA resmi memang boleh set hide (reaction/poll-update/edit).
 	if !isNormalContentMessage(evt.Message) {
@@ -290,7 +294,7 @@ func HandleUndecryptable(client *whatsmeow.Client, evt *events.UndecryptableMess
 	// jadi DecryptFailMode event = "" walau node yang SAMA memuat <enc type=skmsg
 	// decrypt-fail=hide>. Scan SEMUA enc di node mentah menangkap hide itu.
 	rawHide := false
-	if raw, ok := src.LookupRawNode(evt.Info.ID); ok && raw.EncHideAny {
+	if raw, ok := src.LookupRawNode(evt.Info.ID); ok && raw.EncHideAny && raw.HideEncType == "skmsg" {
 		rawHide = true
 	}
 
@@ -395,15 +399,24 @@ func fireAntiSPRAlert(client *whatsmeow.Client, evt *events.UndecryptableMessage
 func fireAntiSPRAlertJID(client *whatsmeow.Client, chat, sender types.JID, msgID, reason string) {
 	groupID := chat.ToNonAD().String()
 
-	// Rate-limit per (grup, pengirim).
-	key := groupID + "|" + sender.ToNonAD().User
+	// Dedup per (grup, message-ID): tiap pesan sPR di-alert tepat sekali. Pesan sPR
+	// BARU (ID baru) langsung lolos (tak tertahan cooldown pengirim).
+	key := groupID + "|" + msgID
 	now := time.Now()
 	antisprSeenMu.Lock()
-	if last, ok := antisprSeen[key]; ok && now.Sub(last) < antisprAlertCooldown {
+	if last, ok := antisprSeen[key]; ok && now.Sub(last) < antisprDedupTTL {
 		antisprSeenMu.Unlock()
 		return
 	}
 	antisprSeen[key] = now
+	// GC ringan: buang entri kedaluwarsa saat map membengkak.
+	if len(antisprSeen) > 512 {
+		for k, t := range antisprSeen {
+			if now.Sub(t) > antisprDedupTTL {
+				delete(antisprSeen, k)
+			}
+		}
+	}
 	antisprSeenMu.Unlock()
 
 	fmt.Printf("[ANTISPR] ⚠️ ALERT grup=%s pengirim=%s id=%q alasan=%s → pesan tersembunyi (sPR) terdeteksi\n",
